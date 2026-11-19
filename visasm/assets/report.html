@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>visasm report</title>
+<style>
+/*__VISASM_CSS__*/
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">visasm <span>BB-level runtime profile</span></div>
+  <div class="meta" id="meta"></div>
+  <div class="tabs">
+    <button id="tab-overview" class="active">Overview</button>
+    <button id="tab-function">Function</button>
+  </div>
+</header>
+
+<main>
+  <aside class="sidebar">
+    <div class="summary" id="summary"></div>
+    <div class="search"><input id="search" placeholder="filter functions (regex)"></div>
+    <div class="funclist" id="funclist"></div>
+  </aside>
+
+  <section class="content">
+    <div class="view" id="view-overview">
+      <div class="overview-scroll">
+        <table class="funcs">
+          <thead>
+            <tr>
+              <th data-sort="name">Function</th>
+              <th data-sort="hot" class="num">Hottest BB</th>
+              <th data-sort="flow" class="num">Block exec sum</th>
+              <th data-sort="entry" class="num">Entries</th>
+              <th data-sort="blocks" class="num">BBs</th>
+              <th data-sort="acc" class="num">Profile match</th>
+            </tr>
+          </thead>
+          <tbody id="overview-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="view hidden" id="view-function">
+      <div class="func-head" id="func-head"></div>
+      <div class="split">
+        <div class="cfg-wrap">
+          <svg id="cfg">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#a9b6c8"></path>
+              </marker>
+              <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#d46a35"></path>
+              </marker>
+            </defs>
+            <g id="canvas"></g>
+          </svg>
+          <div class="zoombtns">
+            <button id="zoom-in" title="zoom in">+</button>
+            <button id="zoom-out" title="zoom out">&minus;</button>
+            <button id="zoom-fit" title="fit">fit</button>
+          </div>
+          <div class="hint">drag to pan &nbsp;·&nbsp; wheel to zoom &nbsp;·&nbsp; click a block for assembly</div>
+        </div>
+        <div class="detail">
+          <div class="dhead" id="detail-head"></div>
+          <div class="edges" id="detail-edges"></div>
+          <div class="asm" id="asm"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const DATA = /*__VISASM_DATA__*/;
+</script>
+<script>
+/*__VISASM_JS__*/
+</script>
+</body>
+</html>

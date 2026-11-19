@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visasm"
+version = "0.1.0"
+description = "Basic-block level runtime profiling and visualization on top of LLVM BOLT"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+visasm = "visasm.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["visasm*"]
+
+[tool.setuptools.package-data]
+visasm = ["assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
