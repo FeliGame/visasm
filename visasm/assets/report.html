@@ -10,67 +10,118 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand">visasm <span>BB-level runtime profile</span></div>
-  <div class="meta" id="meta"></div>
-  <div class="tabs">
-    <button id="tab-overview" class="active">Overview</button>
-    <button id="tab-function">Function</button>
-  </div>
+  <div class="brand">visasm</div>
+  <div class="report-name" id="report-name"></div>
+  <nav class="report-nav" aria-label="Report">
+    <button id="tab-overview" type="button" aria-current="page">Overview</button>
+    <button id="tab-callgraph" type="button">Call graph</button>
+  </nav>
 </header>
 
 <main>
-  <aside class="sidebar">
+  <section id="view-overview" class="overview" aria-label="Overview">
     <div class="summary" id="summary"></div>
-    <div class="search"><input id="search" placeholder="filter functions (regex)"></div>
-    <div class="funclist" id="funclist"></div>
-  </aside>
-
-  <section class="content">
-    <div class="view" id="view-overview">
+    <section class="overview-functions" aria-labelledby="overview-title">
+      <div class="overview-head">
+        <h1 id="overview-title">Functions</h1>
+        <input class="filter" id="overview-search" type="search" aria-label="Filter functions by regular expression" placeholder="Filter functions (regex)">
+      </div>
       <div class="overview-scroll">
         <table class="funcs">
           <thead>
             <tr>
-              <th data-sort="name">Function</th>
-              <th data-sort="hot" class="num">Hottest BB</th>
-              <th data-sort="flow" class="num">Block exec sum</th>
-              <th data-sort="entry" class="num">Entries</th>
-              <th data-sort="blocks" class="num">BBs</th>
-              <th data-sort="acc" class="num">Profile match</th>
+              <th scope="col"><button data-sort="name">Function</button></th>
+              <th scope="col" class="num" aria-sort="descending"><button data-sort="hot">Hottest BB</button></th>
+              <th scope="col" class="num"><button data-sort="flow">Block exec sum</button></th>
+              <th scope="col" class="num"><button data-sort="entry">Entries</button></th>
+              <th scope="col" class="num"><button data-sort="blocks">BBs</button></th>
+              <th scope="col" class="num"><button data-sort="acc">Profile match</button></th>
             </tr>
           </thead>
           <tbody id="overview-body"></tbody>
         </table>
       </div>
-    </div>
+    </section>
+  </section>
 
-    <div class="view hidden" id="view-function">
-      <div class="func-head" id="func-head"></div>
-      <div class="split">
-        <div class="cfg-wrap">
-          <svg id="cfg">
-            <defs>
-              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="#a9b6c8"></path>
-              </marker>
-              <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="#d46a35"></path>
-              </marker>
-            </defs>
-            <g id="canvas"></g>
-          </svg>
-          <div class="zoombtns">
-            <button id="zoom-in" title="zoom in">+</button>
-            <button id="zoom-out" title="zoom out">&minus;</button>
-            <button id="zoom-fit" title="fit">fit</button>
+  <section id="graph-workspace" class="workspace" aria-label="Graph workspace" hidden>
+    <div class="cg-toolbar" id="cg-toolbar">
+      <label class="cg-opt"><input type="checkbox" id="cg-external" checked> External calls</label>
+      <label class="cg-opt"><input type="checkbox" id="cg-labels"> Edge counts</label>
+      <span class="cg-stat" id="cg-stat"></span>
+      <span class="cg-hotscale" title="Node color by hottest basic block">Cold <i></i> Hot</span>
+    </div>
+    <div class="func-head" id="func-head" hidden>
+      <button type="button" id="back-to-report" class="back"><span aria-hidden="true">←</span> <span id="back-label"></span></button>
+      <h1 id="func-name" tabindex="-1"></h1>
+      <div class="func-stats" id="func-stats"></div>
+    </div>
+    <div class="stage" id="stage">
+      <div class="graph-surface" id="view-callgraph">
+        <svg id="cg" aria-label="Function call graph">
+          <defs>
+            <marker id="cg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#9fb0c6"></path>
+            </marker>
+          </defs>
+          <g id="cg-canvas"></g>
+        </svg>
+        <div class="empty graph-empty" id="cg-empty" hidden>No functions in the call graph</div>
+      </div>
+      <div class="graph-surface" id="view-function" hidden>
+        <svg id="cfg" aria-label="Control-flow graph">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#a9b6c8"></path>
+            </marker>
+            <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#d46a35"></path>
+            </marker>
+          </defs>
+          <g id="canvas"></g>
+        </svg>
+        <div class="empty graph-empty" id="cfg-empty" hidden>No basic blocks</div>
+      </div>
+
+      <aside class="panel sidebar" id="function-panel" aria-label="Functions">
+        <div class="panel-head">
+          <h2>Functions</h2>
+          <button type="button" class="panel-toggle" id="toggle-functions" aria-controls="function-panel-body">
+            <span class="chevron" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div class="panel-body" id="function-panel-body">
+          <div class="search"><input class="filter" id="search" type="search" aria-label="Filter functions by regular expression" placeholder="Filter functions (regex)"></div>
+          <div class="funclist" id="funclist"></div>
+        </div>
+      </aside>
+
+      <aside class="panel inspector" id="inspector" aria-labelledby="inspector-title">
+        <div class="panel-head">
+          <button type="button" class="panel-toggle" id="toggle-inspector" aria-controls="inspector-body">
+            <span class="chevron" aria-hidden="true"></span>
+          </button>
+          <h2 id="inspector-title">Calls</h2>
+        </div>
+        <div class="panel-body" id="inspector-body">
+          <div class="detail" id="cg-detail">
+            <p class="empty" id="cg-no-selection">Select a function to view its calls.</p>
+            <div class="dhead" id="cg-info" hidden></div>
+            <div class="cg-links" id="cg-links" hidden></div>
           </div>
-          <div class="hint">drag to pan &nbsp;·&nbsp; wheel to zoom &nbsp;·&nbsp; click a block for assembly</div>
+          <div class="detail" id="cfg-detail" hidden>
+            <p class="empty" id="cfg-no-selection" hidden>No block selected</p>
+            <div class="dhead" id="detail-head"></div>
+            <div class="edges" id="detail-edges"></div>
+            <div class="asm" id="asm"></div>
+          </div>
         </div>
-        <div class="detail">
-          <div class="dhead" id="detail-head"></div>
-          <div class="edges" id="detail-edges"></div>
-          <div class="asm" id="asm"></div>
-        </div>
+      </aside>
+
+      <div class="zoombtns" role="group" aria-label="Graph zoom">
+        <button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button>
+        <button type="button" id="zoom-fit" title="Fit graph to view">Fit</button>
+        <button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
       </div>
     </div>
   </section>

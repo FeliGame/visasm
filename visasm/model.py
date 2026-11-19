@@ -23,6 +23,10 @@ class Instruction:
     text: str
     debug_line: Optional[str] = None
     is_data: bool = False
+    #: Direct call target printed by BOLT (``bl "foo/1"``, ``callq foo@PLT``).
+    call_target: Optional[str] = None
+    #: Per-call-site count from BOLT's ``# Count: N`` annotation.
+    call_count: Optional[int] = None
 
 
 @dataclass
@@ -78,6 +82,12 @@ class Block:
                     "text": i.text,
                     "debug": i.debug_line,
                     **({"data": True} if i.is_data else {}),
+                    **({"call": i.call_target} if i.call_target else {}),
+                    **(
+                        {"call_count": i.call_count}
+                        if i.call_target and i.call_count is not None
+                        else {}
+                    ),
                 }
                 for i in self.instructions
             ],
@@ -131,6 +141,10 @@ _KEY_RE = re.compile(r"^  ([A-Za-z][A-Za-z0-9 ]*?)\s*: (.*)$")
 _BLOCK_RE = re.compile(r"^(.*) \((\d+) instructions, align : (\d+)\)$")
 _INST_RE = re.compile(r"^    ([0-9a-fA-F]{8,16}): (.*)$")
 _DEBUG_RE = re.compile(r" # debug line (.*?):(\d+)(?::(\d+))?")
+_COUNT_RE = re.compile(r"#\s*Count:\s*(\d+)")
+#: Direct calls and tail calls. Conditional branches (``b.eq``) cannot match
+#: because a whitespace is required after the mnemonic.
+_CALL_RE = re.compile(r"^(bl|blx|call|callq|b|jmp)\s+(\S+)(?:\s+<([^>]+)>)?")
 
 #: Lines printed by BOLT's diagnostics interleaved with the CFG dump.
 _NOISE_PREFIXES = ("BOLT-INFO", "BOLT-WARNING", "BOLT-ERROR")
@@ -234,7 +248,31 @@ def _parse_instruction(line: str) -> Optional[Instruction]:
             debug += f":{dm.group(3)}"
         body = body[: dm.start()]
     is_data = bool(re.match(r"^\s*\.(word|short|byte)\b", body))
-    return Instruction(offset=offset, text=body.rstrip(), debug_line=debug, is_data=is_data)
+    call_target = None
+    call_count = None
+    if not is_data:
+        cm = _CALL_RE.match(body)
+        if cm:
+            target = cm.group(3) or cm.group(2)
+            target = target.strip()
+            if target.startswith('"') and target.endswith('"'):
+                target = target[1:-1]
+            # Local labels / raw addresses are intra-function branches.
+            if target and not target.startswith(".") and not re.fullmatch(
+                r"0x[0-9a-fA-F]+", target
+            ):
+                call_target = target
+                ctm = _COUNT_RE.search(body)
+                if ctm:
+                    call_count = int(ctm.group(1))
+    return Instruction(
+        offset=offset,
+        text=body.rstrip(),
+        debug_line=debug,
+        is_data=is_data,
+        call_target=call_target,
+        call_count=call_count,
+    )
 
 
 def parse_print_cfg(text: str) -> list[Function]:

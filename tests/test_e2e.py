@@ -95,9 +95,24 @@ def test_profile_pipeline(demo, capsys):
     classify = find("classify")
     assert max(b["count"] or 0 for b in classify["blocks"]) > 0
 
+    # Function-level call graph aggregated from BOLT's per-call-site counts.
+    cg = data["callgraph"]
+    nodes = {n["id"]: n for n in cg["nodes"]}
+    edges = {(e["source"], e["target"]): e["count"] for e in cg["edges"]}
+    assert cg["defined"] >= 3
+    assert cg["external"] >= 1
+    assert edges.get((main_fn["raw_name"], classify["raw_name"]), 0) > 0
+    assert any(
+        e["source"] == main_fn["raw_name"] and n["external"]
+        for e in cg["edges"]
+        for n in [nodes[e["target"]]]
+    )
+
     html = report.read_text()
     assert "<svg" in html and "main" in html
     assert '"blocks"' in html  # embedded model
+    assert '"callgraph"' in html
+    assert "tab-callgraph" in html
 
 
 def test_report_requires_binary(tmp_path):

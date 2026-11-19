@@ -52,6 +52,81 @@ def _counts(func: Function) -> tuple[Optional[int], int]:
     return max(values), sum(values)
 
 
+def build_callgraph(functions: list[Function], func_objs: list[dict]) -> dict:
+    """Aggregate per-call-site counts into a function-level call graph.
+
+    BOLT annotates every direct call with ``# Count: N`` measured at the call
+    site, so edge weights are real execution counts rather than samples.
+    """
+    defined = {obj["raw_name"] for obj in func_objs}
+
+    nodes: dict[str, dict] = {}
+    for i, obj in enumerate(func_objs):
+        nodes[obj["raw_name"]] = {
+            "id": obj["raw_name"],
+            "display": obj["display"],
+            "hot": obj["hot"] or 0,
+            "flow": obj["flow"],
+            "exec_count": obj["exec_count"],
+            "bb_count": obj["bb_count"],
+            "external": False,
+            "fn": i,
+        }
+
+    externals: dict[str, int] = {}
+    edge_counts: dict[tuple[str, str], dict] = {}
+
+    def resolve(target: str) -> tuple[str, bool]:
+        if target in defined:
+            return target, False
+        base = target.split("@")[0]
+        if base in defined:
+            return base, False
+        return target, True
+
+    for f, obj in zip(functions, func_objs):
+        src = obj["raw_name"]
+        for block in f.blocks:
+            for inst in block.instructions:
+                if not inst.call_target:
+                    continue
+                target, is_external = resolve(inst.call_target)
+                if is_external:
+                    externals[target] = externals.get(target, 0) + 1
+                count = inst.call_count
+                if count is None:
+                    count = block.exec_count or 0
+                edge = edge_counts.setdefault(
+                    (src, target), {"source": src, "target": target, "count": 0, "sites": 0}
+                )
+                edge["count"] += count
+                edge["sites"] += 1
+
+    if externals:
+        ext_display = demangle(externals)
+        for name, count in externals.items():
+            nodes[name] = {
+                "id": name,
+                "display": ext_display.get(name, name),
+                "hot": 0,
+                "flow": 0,
+                "exec_count": None,
+                "bb_count": 0,
+                "external": True,
+                "fn": -1,
+                "sites": count,
+            }
+
+    edges = sorted(edge_counts.values(), key=lambda e: e["count"], reverse=True)
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "max_edge": max((e["count"] for e in edges), default=0),
+        "defined": len(defined),
+        "external": len(externals),
+    }
+
+
 def build_payload(
     functions: list[Function],
     binary: str,
@@ -74,6 +149,7 @@ def build_payload(
 
     matched = sum(1 for f in functions if f.exec_count is not None and f.blocks)
     total_blocks = sum(len(f.blocks) for f in functions)
+    callgraph = build_callgraph(functions, out_funcs)
     return {
         "title": title or Path(binary).name,
         "binary": str(Path(binary).resolve()),
@@ -85,8 +161,11 @@ def build_payload(
             "matched_functions": matched,
             "blocks": total_blocks,
             "hottest_block": hot_max,
+            "call_edges": len(callgraph["edges"]),
+            "external_symbols": callgraph["external"],
         },
         "functions": out_funcs,
+        "callgraph": callgraph,
     }
 
 

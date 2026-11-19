@@ -125,13 +125,17 @@ visasm profile <binary> [-o report.html] [--json model.json]
 
 ## 报告说明
 
-- **Overview**：所有函数的入口次数、最热 BB、块执行次数之和、BB 数、profile 匹配率。
-  点击表头可排序。
-- **Function**：左侧函数列表按最热 BB 排序，支持正则过滤；主区域为分层布局的机器 CFG：
+- **Overview** 是报告首页。函数表支持正则筛选和列排序，选择一行可查看该函数的 CFG。
+- **Call graph**：函数级调用关系总图，边权来自 BOLT 在每个调用点标注的 `# Count`：
+  - 力导向布局，节点颜色/大小按函数最热 BB 映射，边宽与颜色按调用次数对数映射；
+  - 默认包含外部符号（如 `printf@PLT`，虚线圆圈），可用 `External calls` 关闭；
+  - 定义函数超过 350 个时按热度截断，边计数可单独开关；
+  - 选择图中节点或左侧的函数可查看调用者和被调用者。`Open CFG` 或双击函数节点可进入函数详情。
+- **函数详情**显示分层布局的机器 CFG。左侧列表可切换函数，顶部返回按钮可回到进入时的视图。
   - 节点颜色按执行次数对数映射（冷 = 浅灰/浅蓝，热 = 橙色/红色）；
   - 边宽度与颜色反映边计数，虚线表示回边；
-  - 拖动平移、滚轮缩放、`fit` 复位；
   - 点击 BB 在右侧查看反汇编、前驱/后继及 DWARF 源文件行号。
+- 两种图都支持拖动平移、滚轮缩放和 `Fit` 适应画布。画布两侧的面板可分别收起。
 - 键盘 `←` / `→` 切换函数。
 
 ## JSON 模型
@@ -140,7 +144,8 @@ visasm profile <binary> [-o report.html] [--json model.json]
 
 ```json
 {
-  "summary": {"functions": 11, "matched_functions": 11, "blocks": 36},
+  "summary": {"functions": 11, "matched_functions": 11, "blocks": 36,
+              "call_edges": 11, "external_symbols": 6},
   "hot_max": 2500,
   "functions": [{
     "raw_name": "main",
@@ -156,7 +161,14 @@ visasm profile <binary> [-o report.html] [--json model.json]
       "succs": [{"target": ".Ltmp8", "count": 1250, "mispreds": 0}],
       "insts": [{"addr": 2144, "text": "add x21, x21, #0x1", "debug": "demo.c:24"}]
     }]
-  }]
+  }],
+  "callgraph": {
+    "defined": 11,
+    "external": 6,
+    "max_edge": 1714,
+    "nodes": [{"id": "main", "display": "main", "hot": 2000, "fn": 0, "external": false}],
+    "edges": [{"source": "main", "target": "mix/1", "count": 1714, "sites": 1}]
+  }
 }
 ```
 
@@ -214,5 +226,6 @@ tests/
 
 - 仅面向 ELF 平台（当前在 Linux/aarch64 验证，BOLT 支持 x86-64）。
 - 每次运行会覆盖 profile 文件，暂不支持多次运行合并。
+- 调用图只包含 BOLT 能解析的直接调用/尾调用；间接调用（函数指针、虚调用）不产生边。
 - 报告将反汇编与模型内嵌在单个 HTML 中，二进制很大时文件会相应变大；
   可用 `--func` 或 `--no-source` 控制体积与耗时。

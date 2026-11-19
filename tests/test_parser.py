@@ -129,3 +129,55 @@ def test_hotness_max():
     payload = build_payload([f1, f2], "/tmp/x", None)
     assert hotness_max([f1, f2]) == 5
     assert payload["hot_max"] == 5
+
+
+CALL_SAMPLE = """Binary Function "caller" after building cfg {
+  Address     : 0x1000
+  Size        : 0x10
+  BB Count    : 1
+  BB Layout   : caller/0
+}
+caller/0 (3 instructions, align : 1)
+  Entry Point
+  Exec Count : 4
+    00000000: 	bl	"mix/1" # Count: 3
+    00000004: 	bl	printf@PLT # Count: 2 # debug line demo.c:9:5
+    00000008: 	b	.LBB01
+"""
+
+
+def test_parse_call_targets():
+    fn = parse_print_cfg(CALL_SAMPLE)[0]
+    ins = fn.blocks[0].instructions
+    assert ins[0].call_target == "mix/1"
+    assert ins[0].call_count == 3
+    assert ins[1].call_target == "printf@PLT"
+    assert ins[1].call_count == 2
+    assert ins[1].debug_line == "demo.c:9:5"
+    # local branches are not calls
+    assert ins[2].call_target is None
+    assert ins[2].call_count is None
+
+
+def test_callgraph_payload():
+    fn = parse_print_cfg(CALL_SAMPLE)[0]
+    payload = build_payload([fn], "/tmp/demo", None)
+    cg = payload["callgraph"]
+    assert cg["defined"] == 1
+    assert cg["external"] == 2
+
+    edges = {(e["source"], e["target"]): e["count"] for e in cg["edges"]}
+    assert edges[("caller", "mix/1")] == 3
+    assert edges[("caller", "printf@PLT")] == 2
+
+    nodes = {n["id"]: n for n in cg["nodes"]}
+    assert nodes["caller"]["external"] is False
+    assert nodes["caller"]["fn"] == 0
+    assert nodes["printf@PLT"]["external"] is True
+    assert payload["summary"]["call_edges"] == 2
+    assert payload["summary"]["external_symbols"] == 2
+
+    obj = payload["functions"][0]
+    call_inst = obj["blocks"][0]["insts"][0]
+    assert call_inst["call"] == "mix/1"
+    assert call_inst["call_count"] == 3

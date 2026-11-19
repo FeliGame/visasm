@@ -5,6 +5,7 @@
   const SVGNS = "http://www.w3.org/2000/svg";
 
   const FUNCS = DATA.functions;
+  const functionIndices = new Map(FUNCS.map((fn, index) => [fn, index]));
   const HOT_LOG = Math.log1p(DATA.hot_max || 1);
 
   let query = "";
@@ -12,9 +13,17 @@
   let sortDir = -1;
   let current = -1;
   let selected = null;
-  let view = { x: 0, y: 0, k: 1 };
-  let geom = null;
-  let dragging = null;
+  let activeView = "overview";
+  let parentView = "overview";
+  let parentFunction = -1;
+  let functionsOpen = true;
+  const inspectorOpen = { callgraph: true, function: true };
+  const compactPanels = { callgraph: null, function: null };
+  const compact = window.matchMedia("(max-width: 900px)");
+  const graphs = {
+    callgraph: { svg: $("#cg"), canvas: $("#cg-canvas"), nodeClass: ".cg-node", min: 0.05, max: 4, fitMax: 1.6 },
+    function: { svg: $("#cfg"), canvas: $("#canvas"), nodeClass: ".bb", min: 0.1, max: 3.5, fitMax: 1.4 },
+  };
 
   // ---------------------------------------------------------------- utils
   const fmt = (n) => {
@@ -47,35 +56,27 @@
   }
   const heatOf = (count) => heat(count ? Math.log1p(count) / HOT_LOG : 0);
 
-  function sumFlow(fn) {
-    return fn.blocks.reduce((a, b) => a + (b.count || 0), 0);
-  }
-  function hottest(fn) {
-    return fn.blocks.reduce((a, b) => Math.max(a, b.count || 0), 0);
-  }
-
   // ------------------------------------------------------------- sidebar
-  function filtered() {
-    if (!query) return FUNCS.slice().sort((a, b) => (b.hot || 0) - (a.hot || 0));
-    let re = null;
+  const hotOrder = FUNCS.slice().sort((a, b) => (b.hot || 0) - (a.hot || 0));
+
+  function filtered(items) {
+    if (!query) return items.slice();
     try {
-      re = new RegExp(query, "i");
-    } catch (e) {
-      re = null;
+      const re = new RegExp(query, "i");
+      return items.filter((f) => re.test(f.raw_name) || re.test(f.display));
+    } catch {
+      return items.filter((f) => f.display.toLowerCase().includes(query.toLowerCase()));
     }
-    return FUNCS.filter((f) =>
-      re ? re.test(f.raw_name) || re.test(f.display) : f.display.toLowerCase().includes(query.toLowerCase())
-    );
   }
 
   function renderMeta() {
     const s = DATA.summary;
-    $("#meta").textContent =
-      `${DATA.binary}  ·  ${s.matched_functions}/${s.functions} functions matched  ·  ${fmt(s.blocks)} basic blocks  ·  generated ${DATA.generated}`;
+    $("#report-name").textContent = DATA.title;
+    $("#report-name").title = DATA.binary;
     document.title = `visasm · ${DATA.title}`;
     $("#summary").innerHTML = [
       ["Functions", fmt(s.functions)],
-      ["Matched", fmt(s.matched_functions)],
+      ["Profiled functions", fmt(s.matched_functions)],
       ["Basic blocks", fmt(s.blocks)],
       ["Hottest BB", fmt(s.hottest_block)],
     ]
@@ -84,35 +85,48 @@
   }
 
   function renderList() {
-    const items = filtered();
-    const maxHot = items.reduce((a, f) => Math.max(a, hottest(f)), 1);
+    const inCallGraph = activeView === "callgraph";
+    const source = inCallGraph ? hotOrder.filter((fn) => cgGeom.byId.has(fn.raw_name)) : hotOrder;
+    const items = filtered(source);
     const box = $("#funclist");
     box.innerHTML = "";
     const frag = document.createDocumentFragment();
     items.slice(0, 600).forEach((fn) => {
-      const hot = hottest(fn);
-      const row = document.createElement("div");
-      row.className = "funcrow" + (FUNCS[current] === fn ? " selected" : "");
-      row.dataset.name = fn.name;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "funcrow";
+      row.dataset.id = fn.raw_name;
       row.innerHTML =
-        `<span class="name" title="${esc(fn.display)}">${esc(short(fn.display, 40))}</span>` +
-        `<span class="cnt">${fmt(hot)}</span>` +
-        `<span class="bar"><i style="width:${Math.max(2, (Math.log1p(hot) / Math.log1p(maxHot)) * 100)}%"></i></span>`;
-      row.addEventListener("click", () => showFunction(FUNCS.indexOf(fn)));
+        `<span class="name" title="${esc(fn.display)}">${esc(fn.display)}</span>` +
+        `<span class="cnt" title="Hottest basic block">${fmt(fn.hot)}</span>`;
+      row.addEventListener("click", () => {
+        if (inCallGraph) selectCGNode(fn.raw_name);
+        else showFunction(functionIndices.get(fn), true);
+      });
       frag.appendChild(row);
     });
-    if (items.length > 600) {
-      const note = document.createElement("div");
-      note.className = "funcrow";
-      note.innerHTML = `<span class="name" style="color:#8a94a6">\u2026 ${items.length - 600} more (use the filter)</span>`;
+    if (!items.length || items.length > 600) {
+      const note = document.createElement("p");
+      note.className = "empty";
+      note.textContent = items.length ? `${fmt(items.length - 600)} more functions. Refine the filter to find them.` : "No matching functions";
       frag.appendChild(note);
     }
     box.appendChild(frag);
+    highlightList();
+  }
+
+  function highlightList() {
+    const id = activeView === "callgraph" ? cgSelected : FUNCS[current]?.raw_name;
+    document.querySelectorAll("#funclist .funcrow").forEach((row) => {
+      const isSelected = row.dataset.id === id;
+      row.classList.toggle("selected", isSelected);
+      row.setAttribute("aria-pressed", String(isSelected));
+    });
   }
 
   // ------------------------------------------------------------ overview
   function renderOverview() {
-    const items = filtered().slice();
+    const items = filtered(FUNCS);
     const key = sortKey;
     const val = (f) => {
       if (key === "name") return f.display.toLowerCase();
@@ -132,16 +146,26 @@
     const frag = document.createDocumentFragment();
     items.slice(0, 1500).forEach((fn) => {
       const tr = document.createElement("tr");
+      const index = functionIndices.get(fn);
+      tr.dataset.function = index;
       tr.innerHTML =
-        `<td class="fname"><span class="heatcell" style="background:${heatOf(fn.hot)}"></span>${esc(short(fn.display, 70))}</td>` +
+        `<td class="fname"><button type="button" title="${esc(fn.display)}"><span class="heatcell" aria-hidden="true" style="background:${heatOf(fn.hot)}"></span>${esc(short(fn.display, 70))}</button></td>` +
         `<td class="num">${fmt(fn.hot)}</td>` +
         `<td class="num">${fmt(fn.flow)}</td>` +
         `<td class="num">${fmt(fn.exec_count)}</td>` +
         `<td class="num">${fn.bb_count}</td>` +
         `<td class="num">${fn.profile_acc == null ? "\u2014" : fn.profile_acc.toFixed(0) + "%"}</td>`;
-      tr.addEventListener("click", () => showFunction(FUNCS.indexOf(fn)));
+      tr.addEventListener("click", () => showFunction(index));
       frag.appendChild(tr);
     });
+    if (!items.length || items.length > 1500) {
+      const row = document.createElement("tr");
+      const cell = row.insertCell();
+      cell.colSpan = 6;
+      cell.className = "empty";
+      cell.textContent = items.length ? `${fmt(items.length - 1500)} more functions. Refine the filter to find them.` : "No matching functions";
+      frag.appendChild(row);
+    }
     body.appendChild(frag);
   }
 
@@ -230,7 +254,7 @@
     return {
       nodes, layers, rank, back, succ, pred, n,
       maxLayer,
-      bbox: { w: width, h: maxRank * (NH + GY) + NH + 120 },
+      bbox: { x: -10, y: 20, w: width + 70, h: maxLayer * (NH + GY) + NH + 64 },
       NW, NH,
     };
   }
@@ -256,7 +280,11 @@
   function renderCfg(fn) {
     const g = $("#canvas");
     g.innerHTML = "";
-    geom = computeLayout(fn);
+    if (!fn.blocks.length) {
+      graphs.function.bbox = null;
+      return;
+    }
+    const geom = computeLayout(fn);
 
     // edges first
     const edgeLayer = document.createElementNS(SVGNS, "g");
@@ -297,11 +325,10 @@
       });
     });
 
-    const fnHot = Math.max(1, hottest(fn));
+    const fnHot = Math.max(1, fn.hot || 0);
     fn.blocks.forEach((B, i) => {
       const a = geom.nodes.get(i);
       if (!a) return;
-      const t = B.count ? Math.log1p(B.count) / HOT_LOG : 0;
       const node = document.createElementNS(SVGNS, "g");
       node.setAttribute("class", "bb" + (selected === B.name ? " selected" : ""));
       node.setAttribute("data-name", B.name);
@@ -350,27 +377,13 @@
       node.addEventListener("click", (e) => {
         e.stopPropagation();
         selectBlock(fn, B.name, true);
+        revealInspector();
       });
       nodeLayer.appendChild(node);
     });
 
-    fitView();
-    applyView();
-  }
-
-  function applyView() {
-    $("#canvas").setAttribute("transform", `translate(${view.x} ${view.y}) scale(${view.k})`);
-  }
-
-  function fitView() {
-    const svg = $("#cfg");
-    const w = svg.clientWidth || 900;
-    const h = svg.clientHeight || 600;
-    if (!geom) return;
-    const bw = geom.bbox.w || 400;
-    const bh = geom.bbox.h || 400;
-    const k = clamp(Math.min((w - 60) / bw, (h - 60) / bh), 0.12, 1.4);
-    view = { k, x: (w - bw * k) / 2, y: 20 };
+    graphs.function.bbox = geom.bbox;
+    fitGraph(graphs.function);
   }
 
   // -------------------------------------------------------------- detail
@@ -384,22 +397,15 @@
     const edges = $("#detail-edges");
     const asm = $("#asm");
     if (!B) return;
-    const share = B.count && fn.blocks.length ? ((B.count / Math.max(1, hottest(fn))) * 100).toFixed(1) : null;
+    const share = B.count && fn.blocks.length ? ((B.count / Math.max(1, fn.hot || 0)) * 100).toFixed(1) : null;
     head.innerHTML =
       `<div class="bname">${esc(B.name)}</div>` +
       `<div class="sub">0x${B.addr.toString(16)} &nbsp;·&nbsp; +0x${B.offset.toString(16)} &nbsp;·&nbsp; ` +
-      `<span class="hot">${fmt(B.count)}</span> executions${share ? " (" + share + "% of hottest BB)" : ""}</div>`;
-    const chip = (n, c) => `<span class="chip" data-jump="${esc(n)}">${esc(n)}${c == null ? "" : " · " + fmt(c)}</span>`;
-    edges.innerHTML =
-      (B.preds.length ? `<b>pred:</b> ${B.preds.map((p) => chip(p, null)).join(" ")}` : "") +
-      " " +
-      (B.succs.length
-        ? `<b>succ:</b> ${B.succs.map((s) => chip(s.target, s.count == null ? s.inferred : s.count)).join(" ")}`
-        : "<b>no successors</b>");
-
-    edges.querySelectorAll(".chip").forEach((el) =>
-      el.addEventListener("click", () => selectBlock(fn, el.dataset.jump, true))
-    );
+      `<span class="hot">${fmt(B.count)}</span> ${B.count === 1 ? "execution" : "executions"}${share ? " (" + share + "% of hottest BB)" : ""}</div>`;
+    const chip = (n, c) => `<button type="button" class="chip" data-jump="${esc(n)}">${esc(n)}${c == null ? "" : " · " + fmt(c)}</button>`;
+    const group = (label, items) => items.length ? `<div class="edge-group"><b>${label}</b>${items.join("")}</div>` : "";
+    edges.innerHTML = group("Predecessors", B.preds.map((p) => chip(p, null))) +
+      group("Successors", B.succs.map((s) => chip(s.target, s.count ?? s.inferred)));
 
     const rows = B.insts
       .map((I) => {
@@ -413,108 +419,651 @@
     if (scroll) asm.scrollTop = 0;
   }
 
-  // ---------------------------------------------------------- navigation
-  function showOverview() {
-    $("#tab-overview").classList.add("active");
-    $("#tab-function").classList.remove("active");
-    $("#view-overview").classList.remove("hidden");
-    $("#view-function").classList.add("hidden");
+  // ----------------------------------------------------------- callgraph
+  const CG = DATA.callgraph || { nodes: [], edges: [], max_edge: 0, defined: 0, external: 0 };
+  const callNodes = new Map(CG.nodes.map((node) => [node.id, node]));
+  const CG_LIMIT = 350;
+  let cgGeom = null;
+  let cgSelected = null;
+
+  function makeRng(seed) {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
   }
 
-  function showFunction(i) {
-    if (i < 0 || i >= FUNCS.length) return;
-    current = i;
-    const fn = FUNCS[i];
-    selected = fn.blocks.length ? (fn.blocks.find((b) => b.entry) || fn.blocks[0]).name : null;
-    $("#tab-function").classList.add("active");
-    $("#tab-overview").classList.remove("active");
-    $("#view-function").classList.remove("hidden");
-    $("#view-overview").classList.add("hidden");
-    renderList();
+  function cgBuild() {
+    const showExt = $("#cg-external").checked;
+    const defs = CG.nodes
+      .filter((n) => !n.external)
+      .sort((a, b) => (b.hot || 0) - (a.hot || 0));
+    const keep = new Set(defs.slice(0, CG_LIMIT).map((n) => n.id));
+    const nodes = defs.filter((n) => keep.has(n.id)).slice();
+    const byId = new Map(nodes.map((n) => [n.id, n]));
 
-    const head = $("#func-head");
-    const acc = fn.profile_acc == null ? "\u2014" : fn.profile_acc.toFixed(1) + "%";
-    head.innerHTML =
-      `<h2>${esc(short(fn.display, 90))}</h2>` +
-      `<span class="pill">0x${fn.address.toString(16)} + 0x${fn.size.toString(16)}</span>` +
-      `<span class="pill">${fn.bb_count} BBs</span>` +
-      `<span class="pill">entries ${fmt(fn.exec_count)}</span>` +
-      `<span class="pill">hottest BB <span class="hot">${fmt(fn.hot)}</span></span>` +
-      `<span class="pill">match ${acc}</span>` +
-      (fn.unknown_cf ? `<span class="pill" style="color:#b23">unknown control flow</span>` : "");
+    if (showExt) {
+      const used = new Set();
+      CG.edges.forEach((e) => {
+        if (keep.has(e.source)) used.add(e.target);
+      });
+      CG.nodes
+        .filter((n) => n.external && used.has(n.id))
+        .forEach((n) => {
+          nodes.push(n);
+          byId.set(n.id, n);
+        });
+    }
 
-    $("#asm").innerHTML = "";
-    $("#detail-head").innerHTML = "";
-    $("#detail-edges").innerHTML = "";
-    requestAnimationFrame(() => {
-      renderCfg(fn);
-      if (selected) selectBlock(fn, selected, false);
+    const edges = CG.edges.filter((e) => byId.has(e.source) && byId.has(e.target));
+    return { nodes, edges, byId };
+  }
+
+  function cgRunLayout(nodes, edges) {
+    const n = nodes.length;
+    const maxHot = Math.max(1, ...nodes.map((d) => d.hot || 0));
+    const hotLog = Math.log1p(maxHot);
+    nodes.forEach((d) => {
+      d.r = d.external ? 8 : 8 + 14 * Math.sqrt(Math.log1p(d.hot || 0) / hotLog);
+    });
+    if (!n) return;
+
+    const idx = new Map(nodes.map((d, i) => [d.id, i]));
+    const E = edges
+      .map((e) => ({ a: idx.get(e.source), b: idx.get(e.target) }))
+      .filter((e) => e.a != null && e.b != null && e.a !== e.b);
+
+    const area = 9000 * Math.max(12, n);
+    const k = Math.sqrt(area / n);
+    const R = Math.sqrt(area) / 2;
+    const rng = makeRng(20240617);
+    const pos = nodes.map(() => ({
+      x: (rng() - 0.5) * R * 1.6,
+      y: (rng() - 0.5) * R * 1.6,
+    }));
+    const disp = pos.map(() => ({ x: 0, y: 0 }));
+    let temp = R / 3;
+    const iters = n > 300 ? 170 : 250;
+
+    for (let it = 0; it < iters; it++) {
+      disp.forEach((d) => {
+        d.x = 0;
+        d.y = 0;
+      });
+      // pairwise repulsion
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          let dx = pos[i].x - pos[j].x;
+          let dy = pos[i].y - pos[j].y;
+          let d2 = dx * dx + dy * dy;
+          if (d2 < 0.01) {
+            dx = (rng() - 0.5) * 0.2;
+            dy = (rng() - 0.5) * 0.2;
+            d2 = dx * dx + dy * dy + 0.01;
+          }
+          const d = Math.sqrt(d2);
+          const f = (k * k) / d;
+          disp[i].x += (dx / d) * f;
+          disp[i].y += (dy / d) * f;
+          disp[j].x -= (dx / d) * f;
+          disp[j].y -= (dy / d) * f;
+        }
+      }
+      // edge attraction
+      E.forEach((e) => {
+        const dx = pos[e.a].x - pos[e.b].x;
+        const dy = pos[e.a].y - pos[e.b].y;
+        const d = Math.max(0.01, Math.hypot(dx, dy));
+        const f = (d * d) / k;
+        disp[e.a].x -= (dx / d) * f;
+        disp[e.a].y -= (dy / d) * f;
+        disp[e.b].x += (dx / d) * f;
+        disp[e.b].y += (dy / d) * f;
+      });
+      // gravity keeps disconnected components in one view
+      for (let i = 0; i < n; i++) {
+        disp[i].x -= pos[i].x * 0.04 * k;
+        disp[i].y -= pos[i].y * 0.04 * k;
+      }
+      // move, then cool down
+      for (let i = 0; i < n; i++) {
+        const d = Math.hypot(disp[i].x, disp[i].y);
+        if (d > 0) {
+          const s = Math.min(d, temp) / d;
+          pos[i].x += disp[i].x * s;
+          pos[i].y += disp[i].y * s;
+        }
+      }
+      temp = Math.max(k * 0.02, temp * 0.97);
+    }
+
+    let cx = 0, cy = 0;
+    pos.forEach((p) => {
+      cx += p.x;
+      cy += p.y;
+    });
+    cx /= n;
+    cy /= n;
+    nodes.forEach((d, i) => {
+      d.x = pos[i].x - cx;
+      d.y = pos[i].y - cy;
     });
   }
 
-  // ------------------------------------------------------------- events
-  $("#search").addEventListener("input", (e) => {
-    query = e.target.value.trim();
+  function cgBBox(nodes) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    nodes.forEach((d) => {
+      x0 = Math.min(x0, d.x - d.r - 4);
+      y0 = Math.min(y0, d.y - d.r - 4);
+      x1 = Math.max(x1, d.x + d.r + 4);
+      y1 = Math.max(y1, d.y + d.r + 18);
+    });
+    if (!isFinite(x0)) return { x: 0, y: 0, w: 10, h: 10 };
+    return { x: x0, y: y0, w: Math.max(10, x1 - x0), h: Math.max(10, y1 - y0) };
+  }
+
+  function renderCallGraph() {
+    const built = cgBuild();
+    const nodes = built.nodes;
+    const edges = built.edges;
+    const byId = built.byId;
+    cgRunLayout(nodes, edges);
+
+    const g = $("#cg-canvas");
+    g.innerHTML = "";
+    const labelLayer = document.createElementNS(SVGNS, "g");
+    const edgeLayer = document.createElementNS(SVGNS, "g");
+    const nodeLayer = document.createElementNS(SVGNS, "g");
+    g.appendChild(edgeLayer);
+    g.appendChild(labelLayer);
+    g.appendChild(nodeLayer);
+
+    const maxEdge = Math.max(1, CG.max_edge || 1);
+    const edgeLog = Math.log1p(maxEdge);
+    const labelOn = $("#cg-labels").checked;
+    const labelElems = [];
+    const pairs = new Set(edges.map((e) => e.source + "\u0000" + e.target));
+
+    edges.forEach((e) => {
+      const a = byId.get(e.source);
+      const b = byId.get(e.target);
+      if (!a || !b) return;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const dist = Math.max(0.01, Math.hypot(dx, dy));
+      const ux = dx / dist, uy = dy / dist;
+      const ax = a.x + ux * (a.r + 1), ay = a.y + uy * (a.r + 1);
+      const bx = b.x - ux * (b.r + 4), by = b.y - uy * (b.r + 4);
+      const t = e.count ? Math.log1p(e.count) / edgeLog : 0;
+
+      let d, mx, my;
+      if (a === b) {
+        const rr = a.r + 14;
+        d = `M ${a.x - a.r * 0.6} ${a.y - a.r * 0.8} A ${rr} ${rr} 0 1 1 ${a.x + a.r * 0.6} ${a.y - a.r * 0.8}`;
+        mx = a.x;
+        my = a.y - a.r - rr;
+      } else if (pairs.has(e.target + "\u0000" + e.source)) {
+        const off = Math.min(46, dist * 0.18);
+        const gx = (a.x + b.x) / 2 - uy * off;
+        const gy = (a.y + b.y) / 2 + ux * off;
+        d = `M ${ax} ${ay} Q ${gx} ${gy} ${bx} ${by}`;
+        mx = (ax + 2 * gx + bx) / 4;
+        my = (ay + 2 * gy + by) / 4;
+      } else {
+        d = `M ${ax} ${ay} L ${bx} ${by}`;
+        mx = (ax + bx) / 2;
+        my = (ay + by) / 2;
+      }
+
+      const path = document.createElementNS(SVGNS, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("class", "cg-edge" + (t > 0.6 ? " hot" : ""));
+      path.setAttribute("marker-end", "url(#cg-arrow)");
+      path.style.strokeWidth = (0.8 + 3.4 * t).toFixed(2);
+      path.style.opacity = (0.3 + 0.55 * t).toFixed(2);
+      path.style.stroke = t > 0.25 ? heat(t) : "#9fb0c6";
+      path.dataset.src = e.source;
+      path.dataset.dst = e.target;
+      path.dataset.op = path.style.opacity;
+      path.dataset.w = path.style.strokeWidth;
+      const title = document.createElementNS(SVGNS, "title");
+      title.textContent = `${a.display} \u2192 ${b.display}\n${fmt(e.count)} calls (${e.sites} site${e.sites === 1 ? "" : "s"})`;
+      path.appendChild(title);
+      edgeLayer.appendChild(path);
+
+      const label = document.createElementNS(SVGNS, "text");
+      label.setAttribute("class", "cg-edge-label");
+      label.setAttribute("x", mx);
+      label.setAttribute("y", my);
+      label.setAttribute("text-anchor", "middle");
+      label.textContent = fmt(e.count);
+      if (!labelOn) label.style.display = "none";
+      labelElems.push(label);
+      labelLayer.appendChild(label);
+    });
+
+    let labelIds = null;
+    if (nodes.length > 160) {
+      labelIds = new Set(
+        nodes
+          .slice()
+          .sort((a, b) => (b.hot || 0) - (a.hot || 0))
+          .slice(0, 70)
+          .map((n) => n.id)
+      );
+    }
+    const maxHot = Math.max(1, ...nodes.map((n) => n.hot || 0));
+    const hotLog = Math.log1p(maxHot);
+
+    nodes.forEach((d) => {
+      const grp = document.createElementNS(SVGNS, "g");
+      grp.setAttribute("class", "cg-node" + (d.external ? " ext" : ""));
+      grp.dataset.id = d.id;
+      grp.style.cursor = "pointer";
+
+      const circle = document.createElementNS(SVGNS, "circle");
+      circle.setAttribute("cx", d.x);
+      circle.setAttribute("cy", d.y);
+      circle.setAttribute("r", d.r.toFixed(1));
+      circle.setAttribute(
+        "fill",
+        d.external ? "#eef1f6" : heat(d.hot ? Math.log1p(d.hot) / hotLog : 0)
+      );
+      grp.appendChild(circle);
+
+      const text = document.createElementNS(SVGNS, "text");
+      text.setAttribute("x", d.x);
+      text.setAttribute("y", d.y + d.r + 11);
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = short(d.display, 24);
+      if (labelIds && !labelIds.has(d.id)) text.style.display = "none";
+      grp.appendChild(text);
+
+      const title = document.createElementNS(SVGNS, "title");
+      title.textContent = d.external
+        ? `${d.display}\nexternal symbol \u00b7 ${d.sites} call sites`
+        : `${d.display}\n hottest BB ${fmt(d.hot)} \u00b7 ${d.bb_count} BBs \u00b7 entries ${fmt(d.exec_count)}`;
+      grp.appendChild(title);
+
+      grp.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        selectCGNode(d.id);
+      });
+      grp.addEventListener("dblclick", (ev) => {
+        ev.stopPropagation();
+        if (d.fn >= 0) showFunction(d.fn);
+      });
+      nodeLayer.appendChild(grp);
+    });
+
+    cgGeom = { byId, labelIds, labelElems };
+    graphs.callgraph.bbox = nodes.length ? cgBBox(nodes) : null;
+    $("#cg-empty").hidden = nodes.length > 0;
+
+    const shownDefined = nodes.filter((n) => !n.external).length;
+    const shownExternal = nodes.length - shownDefined;
+    const totalDefined = CG.defined || shownDefined;
+    $("#cg-stat").textContent =
+      `${fmt(shownDefined)}${shownDefined < totalDefined ? "/" + fmt(totalDefined) : ""} functions` +
+      (shownExternal ? ` + ${fmt(shownExternal)} external` : "") +
+      ` · ${fmt(edges.length)} edges`;
+
+    if (callNodes.get(cgSelected)?.external && !byId.has(cgSelected)) cgSelected = null;
     renderList();
-    renderOverview();
+    renderCallDetails();
+    updatePanels();
+    fitGraph(graphs.callgraph);
+  }
+
+  function highlightCG() {
+    const id = cgSelected;
+    const near = new Set();
+    if (id) {
+      CG.edges.forEach((e) => {
+        if (e.source === id) near.add(e.target);
+        if (e.target === id) near.add(e.source);
+      });
+    }
+    document.querySelectorAll("#cg-canvas .cg-edge").forEach((el) => {
+      const conn = !id || el.dataset.src === id || el.dataset.dst === id;
+      el.style.opacity = id ? (conn ? "0.95" : "0.06") : el.dataset.op;
+      el.style.strokeWidth = conn && id
+        ? (parseFloat(el.dataset.w) + 0.8).toFixed(2)
+        : el.dataset.w;
+    });
+    document.querySelectorAll("#cg-canvas .cg-node").forEach((el) => {
+      const sel = el.dataset.id === id;
+      const nb = near.has(el.dataset.id);
+      const txt = el.querySelector("text");
+      el.classList.toggle("selected", sel);
+      el.style.opacity = !id || sel || nb ? "" : "0.22";
+      if (txt) {
+        const labelIds = cgGeom?.labelIds;
+        txt.style.display = !labelIds || labelIds.has(el.dataset.id) || sel || nb ? "" : "none";
+      }
+    });
+  }
+
+  function selectCGNode(id) {
+    cgSelected = id;
+    renderCallDetails();
+    highlightList();
+    if (id === null) updatePanels();
+    else revealInspector();
+  }
+
+  function renderCallDetails() {
+    highlightCG();
+    const d = callNodes.get(cgSelected);
+    const info = $("#cg-info");
+    const links = $("#cg-links");
+    $("#cg-no-selection").hidden = Boolean(d);
+    info.hidden = links.hidden = !d;
+    if (!d) return;
+
+    if (d.external) {
+      info.innerHTML =
+        `<div class="bname">${esc(d.display)}</div>` +
+        `<div class="sub">External symbol · ${d.sites} call site${d.sites === 1 ? "" : "s"}</div>`;
+    } else {
+      info.innerHTML =
+        `<div class="bname">${esc(d.display)}</div>` +
+        `<div class="sub">${fmt(d.exec_count)} entries · Hottest BB <span class="hot">${fmt(d.hot)}</span></div>`;
+    }
+
+    const callLink = (id, count) => {
+      const name = esc(callNodes.get(id)?.display ?? id);
+      return `<button type="button" class="funcrow call-link" data-id="${esc(id)}">` +
+        `<span class="name" title="${name}">${name}</span><span class="cnt">${fmt(count)}</span></button>`;
+    };
+    const group = (label, items) => items.length
+      ? `<section class="call-group"><h3>${label}</h3><div class="call-list">${items.join("")}</div></section>`
+      : "";
+    const callers = CG.edges.filter((e) => e.target === d.id).map((e) => callLink(e.source, e.count));
+    const callees = CG.edges.filter((e) => e.source === d.id).map((e) => callLink(e.target, e.count));
+    links.innerHTML = (d.fn >= 0 ? '<button type="button" class="open-cfg" id="cg-open">Open CFG</button>' : "") +
+      (group("Callers", callers) + group("Callees", callees) || '<p class="empty">No calls</p>');
+    links.scrollTop = 0;
+  }
+
+  // ---------------------------------------------------------- navigation
+  function setView(next) {
+    activeView = next;
+    const inOverview = next === "overview";
+    const inFunction = next === "function";
+    const section = inFunction ? parentView : next;
+    for (const name of ["overview", "callgraph"]) {
+      const button = $("#tab-" + name);
+      if (section === name) button.setAttribute("aria-current", inFunction ? "true" : "page");
+      else button.removeAttribute("aria-current");
+    }
+
+    $("#view-overview").hidden = !inOverview;
+    $("#graph-workspace").hidden = inOverview;
+    $("#cg-toolbar").hidden = $("#view-callgraph").hidden = $("#cg-detail").hidden = inFunction;
+    $("#func-head").hidden = $("#view-function").hidden = $("#cfg-detail").hidden = !inFunction;
+    $("#stage").dataset.view = next;
+    $("#inspector-title").textContent = inFunction ? "Basic block" : "Calls";
+    updatePanels();
+  }
+
+  function showSection(next) {
+    if (activeView === next) return;
+    setView(next);
+    if (next === "callgraph") {
+      if (!cgGeom) renderCallGraph();
+      else renderList();
+    }
+  }
+
+  function showFunction(i, fromList = false) {
+    if (i < 0 || i >= FUNCS.length) return;
+    const entering = activeView !== "function";
+    if (entering) {
+      parentView = activeView;
+      parentFunction = i;
+    }
+    if (entering || fromList) compactPanels.function = null;
+    setView("function");
+    if (entering) renderList();
+
+    if (current !== i) {
+      current = i;
+      const fn = FUNCS[i];
+      selected = (fn.blocks.find((b) => b.entry) || fn.blocks[0])?.name ?? null;
+      const name = $("#func-name");
+      name.textContent = name.title = fn.display;
+      const acc = fn.profile_acc == null ? "—" : fn.profile_acc.toFixed(1) + "%";
+      $("#func-stats").innerHTML =
+        `<span>0x${fn.address.toString(16)} + 0x${fn.size.toString(16)}</span>` +
+        `<span>${fn.bb_count} BBs</span>` +
+        `<span>Entries ${fmt(fn.exec_count)}</span>` +
+        `<span>Hottest BB <b class="hot">${fmt(fn.hot)}</b></span>` +
+        `<span>Profile match ${acc}</span>` +
+        (fn.unknown_cf ? '<span class="warning">Unknown control flow</span>' : "");
+
+      $("#cfg-empty").hidden = selected !== null;
+      $("#cfg-no-selection").hidden = selected !== null;
+      $("#detail-head").hidden = selected === null;
+      $("#asm").hidden = selected === null;
+      $("#detail-edges").hidden = selected === null;
+      renderCfg(fn);
+      if (selected !== null) selectBlock(fn, selected, true);
+    }
+
+    highlightList();
+    $("#back-label").textContent = parentView === "overview" ? "Overview" : "Call graph";
+    if (entering || (compact.matches && fromList)) $("#func-name").focus({ preventScroll: true });
+  }
+
+  // -------------------------------------------------------------- panels
+  const stage = $("#stage");
+  const panels = {
+    functions: { container: $("#function-panel"), body: $("#function-panel-body"), button: $("#toggle-functions") },
+    inspector: { container: $("#inspector"), body: $("#inspector-body"), button: $("#toggle-inspector") },
+  };
+
+  function updatePanels() {
+    if (activeView === "overview") return;
+    const onCompact = compact.matches;
+    const shown = {
+      functions: onCompact ? compactPanels[activeView] === "functions" : functionsOpen,
+      inspector: onCompact ? compactPanels[activeView] === "inspector" : inspectorOpen[activeView],
+    };
+    for (const [id, { container, body, button }] of Object.entries(panels)) {
+      const open = shown[id];
+      if (!open && body.contains(document.activeElement)) button.focus({ preventScroll: true });
+      container.classList.toggle("collapsed", !open);
+      body.hidden = !open;
+      button.setAttribute("aria-expanded", String(open));
+      const label = (open ? "Collapse " : "Expand ") + (id === "functions" ? "functions" : $("#inspector-title").textContent.toLowerCase());
+      button.title = label;
+      button.setAttribute("aria-label", label);
+    }
+    updateGraphViewport();
+  }
+
+  function revealInspector() {
+    if (compact.matches) {
+      compactPanels[activeView] = "inspector";
+      updatePanels();
+    }
+  }
+
+  for (const [id, { button, body }] of Object.entries(panels)) {
+    button.addEventListener("click", () => {
+      if (compact.matches) compactPanels[activeView] = body.hidden ? id : null;
+      else if (id === "functions") functionsOpen = !functionsOpen;
+      else inspectorOpen[activeView] = body.hidden;
+      updatePanels();
+    });
+  }
+  compact.addEventListener("change", updatePanels);
+
+  // -------------------------------------------------------- canvas input
+  function graphViewport() {
+    const w = stage.clientWidth;
+    const h = stage.clientHeight;
+    const inset = (panel) => panel.offsetWidth + 2 * panel.offsetTop;
+    const left = compact.matches ? 0 : inset(panels.functions.container);
+    const right = compact.matches ? 0 : inset(panels.inspector.container);
+    return { x: left, w: Math.max(1, w - left - right), h };
+  }
+
+  function updateGraphViewport() {
+    const graph = graphs[activeView];
+    if (!graph) return;
+    const { x, w } = graphViewport();
+    stage.style.setProperty("--graph-center", (x + w / 2) + "px");
+    if (graph.view?.fitted) fitGraph(graph);
+  }
+
+  function applyGraphView(graph) {
+    const { x, y, k } = graph.view;
+    graph.canvas.setAttribute("transform", `translate(${x} ${y}) scale(${k})`);
+  }
+
+  function fitGraph(graph) {
+    const b = graph.bbox;
+    if (!b) return;
+    const { x, w, h } = graphViewport();
+    const availableH = Math.max(1, h - 52);
+    const pad = Math.min(24, w / 8, availableH / 8);
+    const k = Math.min((w - pad * 2) / b.w, (availableH - pad * 2) / b.h, graph.fitMax);
+    graph.view = {
+      k,
+      x: x + (w - b.w * k) / 2 - b.x * k,
+      y: (availableH - b.h * k) / 2 - b.y * k,
+      fitted: true,
+    };
+    applyGraphView(graph);
+  }
+
+  function zoomGraph(graph, factor, x, y) {
+    const v = graph.view;
+    if (!v || !graph.bbox) return;
+    if (x === undefined) {
+      const viewport = graphViewport();
+      x = viewport.x + viewport.w / 2;
+      y = (viewport.h - 52) / 2;
+    }
+    const k = clamp(v.k * factor, Math.min(v.k, graph.min), graph.max);
+    v.x = x - (x - v.x) * k / v.k;
+    v.y = y - (y - v.y) * k / v.k;
+    v.k = k;
+    v.fitted = false;
+    applyGraphView(graph);
+  }
+
+  for (const graph of Object.values(graphs)) {
+    const { svg, nodeClass } = graph;
+    let drag = null;
+    svg.addEventListener("wheel", (e) => {
+      if (!graph.bbox) return;
+      e.preventDefault();
+      const bounds = svg.getBoundingClientRect();
+      zoomGraph(graph, e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - bounds.left, e.clientY - bounds.top);
+    }, { passive: false });
+
+    svg.addEventListener("pointerdown", (e) => {
+      if (!graph.bbox || e.button !== 0 || e.target.closest(nodeClass) || drag) return;
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, vx: graph.view.x, vy: graph.view.y, moved: false };
+      svg.setPointerCapture(e.pointerId);
+    });
+    svg.addEventListener("pointermove", (e) => {
+      if (drag?.id !== e.pointerId) return;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      drag.moved = true;
+      svg.classList.add("dragging");
+      graph.view.x = drag.vx + dx;
+      graph.view.y = drag.vy + dy;
+      graph.view.fitted = false;
+      applyGraphView(graph);
+    });
+    svg.addEventListener("pointerup", (e) => {
+      if (graph === graphs.callgraph && drag?.id === e.pointerId && !drag.moved) selectCGNode(null);
+    });
+    svg.addEventListener("lostpointercapture", (e) => {
+      if (drag?.id !== e.pointerId) return;
+      drag = null;
+      svg.classList.remove("dragging");
+    });
+  }
+
+  new ResizeObserver(updateGraphViewport).observe(stage);
+
+  // ------------------------------------------------------------- events
+  for (const id of ["search", "overview-search"]) {
+    $("#" + id).addEventListener("input", (e) => {
+      query = e.target.value.trim();
+      $(id === "search" ? "#overview-search" : "#search").value = e.target.value;
+      renderOverview();
+      if (activeView !== "overview") renderList();
+    });
+  }
+
+  $("#tab-overview").addEventListener("click", () => showSection("overview"));
+  $("#tab-callgraph").addEventListener("click", () => showSection("callgraph"));
+  $("#back-to-report").addEventListener("click", () => {
+    showSection(parentView);
+    const target = parentView === "overview"
+      ? $(`tr[data-function="${parentFunction}"] button`)
+      : [...$("#funclist").querySelectorAll(".funcrow")].find((row) => row.dataset.id === cgSelected && row.offsetWidth);
+    (target || $("#tab-" + parentView)).focus({ preventScroll: true });
   });
 
-  $("#tab-overview").addEventListener("click", showOverview);
-  $("#tab-function").addEventListener("click", () => {
-    showFunction(current >= 0 ? current : 0);
-  });
-
-  document.querySelectorAll("table.funcs th").forEach((th) => {
-    th.addEventListener("click", () => {
-      const key = th.dataset.sort;
+  document.querySelectorAll(".funcs th button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.sort;
       if (sortKey === key) sortDir *= -1;
       else { sortKey = key; sortDir = key === "name" ? 1 : -1; }
+      $(".funcs th[aria-sort]").removeAttribute("aria-sort");
+      button.parentElement.setAttribute("aria-sort", sortDir > 0 ? "ascending" : "descending");
       renderOverview();
     });
   });
 
-  const svg = $("#cfg");
-  svg.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const r = svg.getBoundingClientRect();
-    const mx = e.clientX - r.left, my = e.clientY - r.top;
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const k = clamp(view.k * factor, 0.1, 3.5);
-    view.x = mx - ((mx - view.x) / view.k) * k;
-    view.y = my - ((my - view.y) / view.k) * k;
-    view.k = k;
-    applyView();
-  }, { passive: false });
-
-  svg.addEventListener("pointerdown", (e) => {
-    if (e.target.closest(".bb")) return;
-    dragging = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-    svg.classList.add("dragging");
-    svg.setPointerCapture(e.pointerId);
+  $("#zoom-in").addEventListener("click", () => zoomGraph(graphs[activeView], 1.2));
+  $("#zoom-out").addEventListener("click", () => zoomGraph(graphs[activeView], 1 / 1.2));
+  $("#zoom-fit").addEventListener("click", () => fitGraph(graphs[activeView]));
+  $("#cg-external").addEventListener("change", renderCallGraph);
+  $("#cg-labels").addEventListener("change", (e) => {
+    cgGeom.labelElems.forEach((el) => { el.style.display = e.target.checked ? "" : "none"; });
   });
-  svg.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    view.x = dragging.vx + (e.clientX - dragging.x);
-    view.y = dragging.vy + (e.clientY - dragging.y);
-    applyView();
-  });
-  const stopDrag = () => { dragging = null; svg.classList.remove("dragging"); };
-  svg.addEventListener("pointerup", stopDrag);
-  svg.addEventListener("pointercancel", stopDrag);
 
-  $("#zoom-in").addEventListener("click", () => { view.k = clamp(view.k * 1.2, 0.1, 3.5); applyView(); });
-  $("#zoom-out").addEventListener("click", () => { view.k = clamp(view.k / 1.2, 0.1, 3.5); applyView(); });
-  $("#zoom-fit").addEventListener("click", () => { fitView(); applyView(); });
+  $("#cg-links").addEventListener("click", (e) => {
+    if (e.target.closest("#cg-open")) {
+      showFunction(callNodes.get(cgSelected).fn);
+      return;
+    }
+    const link = e.target.closest(".call-link");
+    if (!link) return;
+    const id = link.dataset.id;
+    if (callNodes.get(id)?.external && !$("#cg-external").checked) {
+      $("#cg-external").checked = true;
+      renderCallGraph();
+    }
+    selectCGNode(id);
+    $("#cg-info .bname").setAttribute("tabindex", "-1");
+    $("#cg-info .bname").focus({ preventScroll: true });
+  });
+
+  $("#detail-edges").addEventListener("click", (e) => {
+    const link = e.target.closest(".chip");
+    if (!link) return;
+    selectBlock(FUNCS[current], link.dataset.jump, true);
+    $("#detail-head .bname").setAttribute("tabindex", "-1");
+    $("#detail-head .bname").focus({ preventScroll: true });
+  });
 
   window.addEventListener("keydown", (e) => {
-    if (e.target.tagName === "INPUT") return;
+    if (activeView !== "function" || e.target.closest("input, .asm")) return;
     if (e.key === "ArrowRight" && current + 1 < FUNCS.length) showFunction(current + 1);
     if (e.key === "ArrowLeft" && current > 0) showFunction(current - 1);
   });
 
-  // ----------------------------------------------------------------- go
   renderMeta();
-  renderList();
   renderOverview();
-  if (FUNCS.length) showFunction(0);
 })();
