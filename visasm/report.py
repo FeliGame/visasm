@@ -226,28 +226,22 @@ def _source_mapping(payload: dict, llvm_bin: Optional[str]) -> dict:
         files[file].add(line)
         instruction_files[address] = file
 
-    source_lines = {}
+    source_files = {}
     for file, lines in files.items():
         path = Path(file)
         try:
             if path.is_file():
-                snippets = {}
-                last = max(lines)
                 with path.open(encoding="utf-8", errors="replace") as source:
-                    for number, text in enumerate(source, 1):
-                        if number in lines:
-                            snippets[number] = text.rstrip("\r\n")
-                        if number >= last:
-                            break
-                if snippets:
-                    source_lines[file] = snippets
+                    content = [line.rstrip("\n") for line in source]
+                if len(content) >= min(lines):
+                    source_files[file] = content
         except (OSError, ValueError):
             continue
     return {
-        "source_lines": source_lines,
+        "source_files": source_files,
         "instruction_files": {
             addr: file for addr, file in instruction_files.items()
-            if file in source_lines and positions[addr][1] in source_lines[file]
+            if file != positions[addr][0]
         },
     }
 

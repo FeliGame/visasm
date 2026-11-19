@@ -384,6 +384,13 @@
 
   // -------------------------------------------------------------- detail
   let instructionIndex = null;
+  const sourceView = {
+    file: null,
+    renderedFile: undefined,
+    fileFunction: -1,
+    blockLocations: [],
+    activeInstruction: null,
+  };
   const isCFI = (inst) => /^\s*!CFI\b/.test(inst.text);
   const hex = (address) => "0x" + address.toString(16);
   const directBranch = /^(?:b(?:\.[a-z]+|l|lx|eq|ne|lt|le|gt|ge|cs|cc|hs|lo|hi|ls|mi|pl|vs|vc)?|cbn?z|tbn?z|j[a-z]*|loop[a-z]*|callq?|tail|beqz?|bnez?|bgez?|bltz?|bgtz?|blez?|bgeu|bltu)$/i;
@@ -391,8 +398,12 @@
   function indexInstructions() {
     const addresses = new Map();
     const symbols = new Map();
+    const sourceLines = new Map();
+    const functionSources = [];
     const blocks = FUNCS.map((fn, fnIndex) => {
       const labels = new Map();
+      const sources = { instructions: new Map(), files: new Map() };
+      functionSources.push(sources);
       for (const block of fn.blocks) {
         for (const inst of block.insts) {
           if (inst.data || isCFI(inst)) continue;
@@ -403,13 +414,25 @@
             symbols.set(fn.raw_name, destination);
             symbols.set(fn.name, destination);
           }
+          const location = inst.debug?.match(/^(.+?):([1-9]\d*)(?::(\d+))?$/);
+          if (!location) continue;
+          const [, name, lineNumber, column] = location;
+          const file = DATA.instruction_files?.[inst.addr] ?? name;
+          const line = Number(lineNumber);
+          destination.source = { file, line, column };
+          sources.instructions.set(inst.addr, destination.source);
+          if (!sources.files.has(file)) sources.files.set(file, line);
+          if (!sourceLines.has(file)) sourceLines.set(file, new Map());
+          const lines = sourceLines.get(file);
+          if (!lines.has(line)) lines.set(line, []);
+          lines.get(line).push(destination);
         }
       }
       const entry = labels.get(fn.blocks.find((block) => block.entry)?.name);
       if (entry && !symbols.has(fn.raw_name)) symbols.set(fn.raw_name, entry);
       return labels;
     });
-    return { addresses, symbols, blocks };
+    return { addresses, symbols, blocks, functionSources, sourceLines };
   }
 
   function assemblyOperand(inst, block, token, target) {
@@ -453,31 +476,100 @@
     return html + esc(operands.slice(cursor)) + esc(comment);
   }
 
-  function renderSource(block) {
-    const entries = new Map();
-    const addressLinks = new Map();
-    for (const inst of block.insts) {
-      const location = inst.debug?.match(/^(.+?):([1-9]\d*)(?::(\d+))?$/);
-      if (!location || inst.data || isCFI(inst)) continue;
-      const [, name, line, column] = location;
-      const file = DATA.instruction_files?.[inst.addr] ?? name;
-      const key = `${file}:${line}`;
-      if (!entries.has(key)) entries.set(key, { file, line, addresses: [] });
-      const entry = entries.get(key);
-      entry.addresses.push(inst.addr);
-      addressLinks.set(inst.addr, `${key}${column ? ":" + column : ""}`);
+  const sourceName = (file) => file.replace(/^.*[\\/]/, "");
+
+  function renderSourceFile(file) {
+    const scroller = $("#source-scroll");
+    $("#source-toolbar").hidden = file === null;
+    const content = file === null ? null : DATA.source_files?.[file];
+    $("#source-unavailable").hidden = file === null || Array.isArray(content);
+    if (file === null) {
+      scroller.innerHTML = '<p class="empty">No source lines for this function</p>';
+      return;
     }
-    const body = $("#source-body");
-    body.innerHTML = [...entries.values()].map(({ file, line, addresses }) => {
-      const name = file.replace(/^.*[\\/]/, "");
-      const code = DATA.source_lines?.[file]?.[line];
-      const buttons = addresses.map((address) => `<button type="button" class="chip" data-address="${address}" title="Go to instruction ${hex(address)}">${hex(address)}</button>`).join("");
-      return `<div class="source-entry"><p class="source-location" title="${esc(file)}">${esc(name)}:${line}</p>` +
-        (typeof code === "string" ? `<pre class="source-code"><code>${esc(code)}</code></pre>` : "") +
-        `<div class="source-addresses">${buttons}</div></div>`;
-    }).join("") || '<p class="empty">No source lines for this block</p>';
-    body.scrollTop = 0;
-    return addressLinks;
+
+    const targets = instructionIndex.sourceLines.get(file);
+    const numbers = (content || []).map((_, index) => index + 1);
+    const extraLines = [...targets.keys()].filter((line) => line > numbers.length).sort((a, b) => a - b);
+    for (const line of extraLines) numbers.push(line);
+    const rows = numbers.map((line) => {
+      const text = content?.[line - 1] ?? DATA.source_lines?.[file]?.[line] ?? "";
+      const cells = `<span class="source-lineno">${line}</span><code>${esc(text)}</code>`;
+      return targets.has(line)
+        ? `<button type="button" class="source-line" data-line="${line}" title="Jump to assembly for line ${line}">${cells}</button>`
+        : `<div class="source-line">${cells}</div>`;
+    });
+    const digits = String(numbers.at(-1)).length;
+    scroller.innerHTML = `<div class="source-lines" style="--gutter-width:calc(${digits}ch + 16px)">${rows.join("")}</div>`;
+    scroller.scrollLeft = 0;
+    scroller.scrollTop = 0;
+  }
+
+  function renderSource(scroll) {
+    if (sourcePanel.container.hidden || sourcePanel.body.hidden || !instructionIndex) return;
+    const { file, blockLocations, activeInstruction } = sourceView;
+    const { files, instructions } = instructionIndex.functionSources[current];
+    const picker = $("#source-file");
+    const filename = $("#source-filename");
+    if (sourceView.fileFunction !== current) {
+      sourceView.fileFunction = current;
+      const names = [...files.keys()].map(sourceName);
+      picker.innerHTML = [...files.keys()].map((path) => {
+        const name = sourceName(path);
+        const label = names.indexOf(name) === names.lastIndexOf(name) ? name : path;
+        return `<option value="${esc(path)}">${esc(label)}</option>`;
+      }).join("");
+      picker.hidden = files.size < 2;
+      filename.hidden = !picker.hidden;
+    }
+    if (file !== null) {
+      picker.value = file;
+      picker.title = filename.title = file;
+      filename.textContent = sourceName(file);
+    }
+    if (file !== sourceView.renderedFile) {
+      renderSourceFile(file);
+      sourceView.renderedFile = file;
+      scroll = true;
+    }
+
+    const view = $("#source-scroll");
+    const rowFor = (line) => view.querySelector(`[data-line="${line}"]`);
+    view.querySelectorAll(".block-mapped, .selected").forEach((row) => row.classList.remove("block-mapped", "selected"));
+    for (const location of blockLocations) {
+      if (location.file === file) rowFor(location.line)?.classList.add("block-mapped");
+    }
+    const active = instructions.get(activeInstruction);
+    const activeLine = active?.file === file ? active.line : undefined;
+    const row = rowFor(activeLine);
+    row?.classList.add("selected");
+
+    const chooser = $("#source-target");
+    const targets = instructionIndex.sourceLines.get(file)?.get(activeLine) ?? [];
+    chooser.hidden = targets.length < 2;
+    if (!chooser.hidden) {
+      chooser.innerHTML = targets.map((target, index) =>
+        `<option value="${index}">${hex(target.address)} · ${esc(FUNCS[target.fnIndex].display)} · ${esc(target.block.name)}</option>`
+      ).join("");
+      const index = targets.findIndex((target) => target.fnIndex === current &&
+        target.block.name === selected && target.address === activeInstruction);
+      chooser.value = String(index);
+    }
+    if (scroll && file !== null) {
+      const firstBlockLine = blockLocations.find((location) => location.file === file)?.line;
+      const position = row ?? rowFor(firstBlockLine ?? files.get(file));
+      if (position) view.scrollTop = position.offsetTop - (view.clientHeight - position.offsetHeight) / 2;
+    }
+  }
+
+  function selectBlockSource(block, sources) {
+    sourceView.activeInstruction = null;
+    sourceView.blockLocations = [...new Set(block.insts.map((inst) => sources.instructions.get(inst.addr)).filter(Boolean))];
+    const first = sourceView.blockLocations.find((location) => location.file === sourceView.file) ??
+      sourceView.blockLocations[0];
+    if (first) sourceView.file = first.file;
+    else if (!sources.files.has(sourceView.file)) sourceView.file = sources.files.keys().next().value ?? null;
+    renderSource(true);
   }
 
   function highlightInstruction(address, showSource) {
@@ -487,18 +579,23 @@
     asm.querySelector(".address-selected")?.classList.remove("address-selected");
     row.classList.add("address-selected");
 
-    const source = $("#source-body");
-    source.querySelector(".selected")?.classList.remove("selected");
-    const entry = source.querySelector(`[data-address="${address}"]`)?.closest(".source-entry");
-    entry?.classList.add("selected");
+    sourceView.activeInstruction = Number(address);
+    const location = instructionIndex.functionSources[current].instructions.get(sourceView.activeInstruction);
+    if (location) sourceView.file = location.file;
     if (showSource) {
       sourceOpen = true;
       updateSourcePanel();
-      entry?.scrollIntoView({ block: "nearest", inline: "nearest" });
     } else {
       row.focus({ preventScroll: true });
     }
+    renderSource(true);
     row.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  function jumpToInstruction(fnIndex, block, address) {
+    if (fnIndex !== current) showFunction(fnIndex);
+    if (block !== selected) selectBlock(FUNCS[current], block, true);
+    highlightInstruction(address, false);
   }
 
   function selectBlock(fn, name, scroll) {
@@ -524,12 +621,13 @@
       group("Successors", B.succs.map((s) => chip(s.target, s.count ?? s.inferred)));
 
     instructionIndex ??= indexInstructions();
-    const sourceLinks = renderSource(B);
+    const sources = instructionIndex.functionSources[current];
     asm.innerHTML = `<table>${B.insts.map((inst) => {
       const cfi = isCFI(inst);
       const address = hex(inst.addr);
-      const source = cfi ? null : sourceLinks.get(inst.addr);
-      const label = source ? `<button type="button" class="asm-link" data-source="${inst.addr}" title="${esc(source)}">${address}</button>` : address;
+      const source = cfi || inst.data ? null : sources.instructions.get(inst.addr);
+      const location = source ? `${source.file}:${source.line}${source.column ? ":" + source.column : ""}` : "";
+      const label = source ? `<button type="button" class="asm-link" data-source="${inst.addr}" title="${esc(location)}">${address}</button>` : address;
       return `<tr${cfi ? ' class="cfi"' : ` data-address="${inst.addr}" tabindex="-1"`}><td class="addr">${label}</td>` +
         `<td class="insn">${renderInstruction(inst, B)}</td></tr>`;
     }).join("")}</table>`;
@@ -537,6 +635,7 @@
       asm.scrollTop = 0;
       asm.scrollLeft = 0;
     }
+    selectBlockSource(B, sources);
   }
 
   // ----------------------------------------------------------- callgraph
@@ -1020,11 +1119,13 @@
   const sourcePanel = { container: $("#source-panel"), body: $("#source-body"), button: $("#toggle-source") };
 
   function updateSourcePanel() {
+    const wasVisible = !sourcePanel.container.hidden && !sourcePanel.body.hidden;
     sourcePanel.container.hidden = activeView !== "function" || selected === null || panels.inspector.body.hidden;
     if (sourcePanel.container.hidden && sourcePanel.container.contains(document.activeElement)) {
       panels.inspector.button.focus({ preventScroll: true });
     }
     setPanel(sourcePanel, sourceOpen, "Source");
+    if (!wasVisible) renderSource(true);
   }
 
   function updatePanels() {
@@ -1248,14 +1349,28 @@
       return;
     }
     const { fn, block, target } = link.dataset;
-    showFunction(Number(fn));
-    if (block !== selected) selectBlock(FUNCS[current], block, true);
-    highlightInstruction(target, false);
+    jumpToInstruction(Number(fn), block, target);
   });
 
-  $("#source-body").addEventListener("click", (e) => {
-    const link = e.target.closest("button[data-address]");
-    if (link) highlightInstruction(link.dataset.address, false);
+  $("#source-file").addEventListener("change", (e) => {
+    sourceView.file = e.target.value;
+    renderSource(true);
+  });
+
+  $("#source-scroll").addEventListener("click", (e) => {
+    const line = e.target.closest("button[data-line]");
+    if (!line) return;
+    const targets = instructionIndex.sourceLines.get(sourceView.file).get(Number(line.dataset.line));
+    const sameBlock = targets.filter((target) => target.fnIndex === current && target.block.name === selected);
+    const target = sameBlock.find((item) => item.address === sourceView.activeInstruction) ?? sameBlock[0] ??
+      targets.find((item) => item.fnIndex === current) ?? targets[0];
+    jumpToInstruction(target.fnIndex, target.block.name, target.address);
+  });
+
+  $("#source-target").addEventListener("change", (e) => {
+    const line = $("#source-scroll .selected")?.dataset.line;
+    const target = instructionIndex.sourceLines.get(sourceView.file)?.get(Number(line))?.[e.target.value];
+    if (target) jumpToInstruction(target.fnIndex, target.block.name, target.address);
   });
 
   window.addEventListener("keydown", (e) => {

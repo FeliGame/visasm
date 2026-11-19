@@ -137,7 +137,15 @@
             </button>
             <h2 id="source-title">Source</h2>
           </div>
-          <div class="panel-body source-body" id="source-body" hidden></div>
+          <div class="panel-body source-body" id="source-body" hidden>
+            <div class="source-toolbar" id="source-toolbar" hidden>
+              <span id="source-filename"></span>
+              <select id="source-file" aria-label="Source file" hidden></select>
+              <select id="source-target" aria-label="Instruction for selected source line" hidden></select>
+            </div>
+            <p class="empty source-unavailable" id="source-unavailable" hidden>Source file unavailable. Showing mapped line numbers.</p>
+            <div class="source-scroll" id="source-scroll"></div>
+          </div>
         </aside>
       </div>
 

@@ -380,13 +380,55 @@ main { flex: 1; display: flex; min-height: 0; min-width: 0; }
   text-underline-offset: 2px;
   font: inherit;
 }
-.source-body { overflow: auto; padding: 3px 0; }
-.source-entry { padding: 8px 12px; border-bottom: 1px solid var(--line); }
-.source-entry:last-child { border-bottom: 0; }
-.source-entry.selected { background: #edf4ff; }
-.source-location { margin: 0; font: 600 11px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-.source-code { margin: 6px 0; font: 12px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
-.source-addresses { display: flex; flex-wrap: wrap; gap: 4px; }
+.source-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: #f7f9fc;
+  font: 11px var(--mono);
+}
+.source-toolbar span, .source-toolbar select {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-toolbar span, #source-file { flex: 1; }
+.source-toolbar select {
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  font: inherit;
+}
+#source-target { max-width: 52%; }
+.source-unavailable { padding: 6px 10px; }
+.source-scroll { position: relative; flex: 1; overflow: auto; }
+.source-lines { min-width: max-content; font: 12px/1.6 var(--mono); tab-size: 4; }
+.source-line {
+  display: grid;
+  grid-template-columns: var(--gutter-width) 1fr;
+  align-items: baseline;
+  width: 100%;
+  padding: 0 10px 0 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+.source-lineno {
+  padding: 0 8px;
+  text-align: right;
+  color: var(--muted);
+  background: #f7f9fc;
+}
+.source-line code { padding-left: 8px; font: inherit; white-space: pre; }
+button.source-line .source-lineno { color: #225bb1; text-decoration: underline; text-underline-offset: 2px; }
+.source-line.block-mapped { background: #edf4ff; }
+button.source-line:hover, .source-line.selected { background: #dceaff; }
+.source-line.selected .source-lineno { color: #18447f; background: #dceaff; font-weight: 600; }
 
 @media (max-width: 900px) {
   .stage { --panel-gap: 10px; }
