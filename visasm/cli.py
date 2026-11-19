@@ -83,7 +83,7 @@ def cmd_report(args) -> int:
     if args.json:
         Path(args.json).write_text(json.dumps(payload, indent=1), encoding="utf-8")
         print(f"json                : {args.json}")
-    write_report(payload, out)
+    write_report(payload, out, llvm_bin=args.llvm_bin)
     s = payload["summary"]
     print(f"functions           : {s['functions']} ({s['matched_functions']} matched)")
     print(f"basic blocks        : {s['blocks']}")
@@ -119,7 +119,7 @@ def cmd_profile(args) -> int:
     out = args.output or f"{Path(binary).name}.visasm.html"
     if args.json:
         Path(args.json).write_text(json.dumps(payload, indent=1), encoding="utf-8")
-    write_report(payload, out)
+    write_report(payload, out, llvm_bin=args.llvm_bin)
     s = payload["summary"]
     print(f"      profile {profile}")
     print(f"      {s['functions']} functions, {s['blocks']} basic blocks")

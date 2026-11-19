@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -13,6 +15,7 @@ from .model import Function, hotness_max
 
 _ASSETS = Path(__file__).parent / "assets"
 _ALIAS_RE = re.compile(r"\(\*\d+\)$")
+_SOURCE_RE = re.compile(r"(.+?):([1-9]\d*)(?::\d+)?$")
 
 
 def strip_alias(name: str) -> str:
@@ -173,6 +176,82 @@ def _read_asset(name: str) -> str:
     return (_ASSETS / name).read_text(encoding="utf-8")
 
 
+def _symbolize_sources(binary: str, addresses: Iterable[int], llvm_bin: Optional[str]) -> dict:
+    tool = shutil.which("llvm-symbolizer", path=llvm_bin) if llvm_bin else None
+    tool = tool or shutil.which("llvm-symbolizer")
+    if tool is None:
+        return {}
+    try:
+        result = subprocess.run(
+            [tool, "--output-style=JSON", "--no-inlines", "--obj", binary],
+            input="".join(f"{addr:#x}\n" for addr in addresses),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return {}
+    locations = {}
+    for row in result.stdout.splitlines():
+        try:
+            obj = json.loads(row)
+            symbol = obj["Symbol"][0]
+            locations[int(obj["Address"], 16)] = (symbol["FileName"], symbol["Line"])
+        except (ValueError, IndexError, KeyError, TypeError):
+            continue
+    return locations
+
+
+def _source_mapping(payload: dict, llvm_bin: Optional[str]) -> dict:
+    positions = {}
+    for fn in payload["functions"]:
+        for block in fn["blocks"]:
+            for inst in block["insts"]:
+                location = _SOURCE_RE.fullmatch(inst.get("debug") or "")
+                if location:
+                    positions[inst["addr"]] = (location[1], int(location[2]))
+    if not positions:
+        return {}
+
+    # BOLT prints the line table's file name without its directory index.
+    resolved = _symbolize_sources(payload["binary"], positions, llvm_bin)
+    files = defaultdict(set)
+    instruction_files = {}
+    for address, (file, line) in positions.items():
+        full_path, resolved_line = resolved.get(address, ("", 0))
+        if resolved_line == line and Path(full_path).parts[-len(Path(file).parts):] == Path(file).parts:
+            file = full_path
+        files[file].add(line)
+        instruction_files[address] = file
+
+    source_lines = {}
+    for file, lines in files.items():
+        path = Path(file)
+        try:
+            if path.is_file():
+                snippets = {}
+                last = max(lines)
+                with path.open(encoding="utf-8", errors="replace") as source:
+                    for number, text in enumerate(source, 1):
+                        if number in lines:
+                            snippets[number] = text.rstrip("\r\n")
+                        if number >= last:
+                            break
+                if snippets:
+                    source_lines[file] = snippets
+        except (OSError, ValueError):
+            continue
+    return {
+        "source_lines": source_lines,
+        "instruction_files": {
+            addr: file for addr, file in instruction_files.items()
+            if file in source_lines and positions[addr][1] in source_lines[file]
+        },
+    }
+
+
 def render(payload: dict) -> str:
     data = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
     html = _read_asset("report.html")
@@ -182,5 +261,6 @@ def render(payload: dict) -> str:
     return html
 
 
-def write_report(payload: dict, output: str) -> None:
-    Path(output).write_text(render(payload), encoding="utf-8")
+def write_report(payload: dict, output: str, *, llvm_bin: Optional[str] = None) -> None:
+    source_mapping = _source_mapping(payload, llvm_bin)
+    Path(output).write_text(render({**payload, **source_mapping}), encoding="utf-8")

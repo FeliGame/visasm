@@ -54,7 +54,6 @@
     <div class="func-head" id="func-head" hidden>
       <button type="button" id="back-to-report" class="back"><span aria-hidden="true">←</span> <span id="back-label"></span></button>
       <h1 id="func-name" tabindex="-1"></h1>
-      <div class="func-stats" id="func-stats"></div>
     </div>
     <div class="stage" id="stage">
       <div class="graph-surface" id="view-callgraph">
@@ -83,40 +82,64 @@
         <div class="empty graph-empty" id="cfg-empty" hidden>No basic blocks</div>
       </div>
 
-      <aside class="panel sidebar" id="function-panel" aria-label="Functions">
+      <aside class="panel sidebar" id="function-panel" aria-labelledby="function-panel-title">
         <div class="panel-head">
-          <h2>Functions</h2>
+          <h2 id="function-panel-title">Functions</h2>
           <button type="button" class="panel-toggle" id="toggle-functions" aria-controls="function-panel-body">
+            <span class="toggle-label" aria-hidden="true"></span>
             <span class="chevron" aria-hidden="true"></span>
           </button>
         </div>
         <div class="panel-body" id="function-panel-body">
-          <div class="search"><input class="filter" id="search" type="search" aria-label="Filter functions by regular expression" placeholder="Filter functions (regex)"></div>
-          <div class="funclist" id="funclist"></div>
+          <div class="panel-body" id="call-functions">
+            <div class="search"><input class="filter" id="search" type="search" aria-label="Filter functions by regular expression" placeholder="Filter functions (regex)"></div>
+            <div class="funclist" id="funclist"></div>
+          </div>
+          <div class="panel-body function-overview" id="function-overview" hidden>
+            <dl class="func-stats" id="func-stats"></dl>
+            <p class="warning" id="func-warning" hidden>Unknown control flow</p>
+            <div class="function-calls" id="function-calls"></div>
+            <h3 class="block-heading">Basic blocks</h3>
+            <div class="funclist" id="blocklist"></div>
+          </div>
         </div>
       </aside>
 
-      <aside class="panel inspector" id="inspector" aria-labelledby="inspector-title">
-        <div class="panel-head">
-          <button type="button" class="panel-toggle" id="toggle-inspector" aria-controls="inspector-body">
-            <span class="chevron" aria-hidden="true"></span>
-          </button>
-          <h2 id="inspector-title">Calls</h2>
-        </div>
-        <div class="panel-body" id="inspector-body">
-          <div class="detail" id="cg-detail">
-            <p class="empty" id="cg-no-selection">Select a function to view its calls.</p>
-            <div class="dhead" id="cg-info" hidden></div>
-            <div class="cg-links" id="cg-links" hidden></div>
+      <div class="right-panels" id="right-panels">
+        <aside class="panel inspector" id="inspector" aria-labelledby="inspector-title">
+          <div class="panel-head">
+            <button type="button" class="panel-toggle" id="toggle-inspector" aria-controls="inspector-body">
+              <span class="chevron" aria-hidden="true"></span>
+              <span class="toggle-label" aria-hidden="true"></span>
+            </button>
+            <h2 id="inspector-title">Calls</h2>
           </div>
-          <div class="detail" id="cfg-detail" hidden>
-            <p class="empty" id="cfg-no-selection" hidden>No block selected</p>
-            <div class="dhead" id="detail-head"></div>
-            <div class="edges" id="detail-edges"></div>
-            <div class="asm" id="asm"></div>
+          <div class="panel-body" id="inspector-body">
+            <div class="detail" id="cg-detail">
+              <p class="empty" id="cg-no-selection">Select a function to view its calls.</p>
+              <div class="dhead" id="cg-info" hidden></div>
+              <div class="cg-links" id="cg-links" hidden></div>
+            </div>
+            <div class="detail" id="cfg-detail" hidden>
+              <p class="empty" id="cfg-no-selection" hidden>No block selected</p>
+              <div class="dhead" id="detail-head"></div>
+              <div class="edges" id="detail-edges"></div>
+              <div class="asm" id="asm"></div>
+            </div>
           </div>
-        </div>
-      </aside>
+        </aside>
+
+        <aside class="panel source-panel collapsed" id="source-panel" aria-labelledby="source-title" hidden>
+          <div class="panel-head">
+            <button type="button" class="panel-toggle" id="toggle-source" aria-controls="source-body">
+              <span class="source-chevron chevron" aria-hidden="true"></span>
+              <span class="toggle-label" aria-hidden="true"></span>
+            </button>
+            <h2 id="source-title">Source</h2>
+          </div>
+          <div class="panel-body source-body" id="source-body" hidden></div>
+        </aside>
+      </div>
 
       <div class="zoombtns" role="group" aria-label="Graph zoom">
         <button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button>

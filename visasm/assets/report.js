@@ -13,10 +13,11 @@
   let sortDir = -1;
   let current = -1;
   let selected = null;
+  let sourceOpen = false;
   let activeView = "overview";
   let parentView = "overview";
   let parentFunction = -1;
-  let functionsOpen = true;
+  const functionsOpen = { callgraph: true, function: true };
   const inspectorOpen = { callgraph: true, function: true };
   const compactPanels = { callgraph: null, function: null };
   const compact = window.matchMedia("(max-width: 900px)");
@@ -85,8 +86,7 @@
   }
 
   function renderList() {
-    const inCallGraph = activeView === "callgraph";
-    const source = inCallGraph ? hotOrder.filter((fn) => cgGeom.byId.has(fn.raw_name)) : hotOrder;
+    const source = hotOrder.filter((fn) => cgGeom.byId.has(fn.raw_name));
     const items = filtered(source);
     const box = $("#funclist");
     box.innerHTML = "";
@@ -99,10 +99,7 @@
       row.innerHTML =
         `<span class="name" title="${esc(fn.display)}">${esc(fn.display)}</span>` +
         `<span class="cnt" title="Hottest basic block">${fmt(fn.hot)}</span>`;
-      row.addEventListener("click", () => {
-        if (inCallGraph) selectCGNode(fn.raw_name);
-        else showFunction(functionIndices.get(fn), true);
-      });
+      row.addEventListener("click", () => selectCGNode(fn.raw_name));
       frag.appendChild(row);
     });
     if (!items.length || items.length > 600) {
@@ -116,9 +113,8 @@
   }
 
   function highlightList() {
-    const id = activeView === "callgraph" ? cgSelected : FUNCS[current]?.raw_name;
     document.querySelectorAll("#funclist .funcrow").forEach((row) => {
-      const isSelected = row.dataset.id === id;
+      const isSelected = row.dataset.id === cgSelected;
       row.classList.toggle("selected", isSelected);
       row.setAttribute("aria-pressed", String(isSelected));
     });
@@ -387,16 +383,136 @@
   }
 
   // -------------------------------------------------------------- detail
-  function selectBlock(fn, name, scroll) {
-    selected = name;
-    document.querySelectorAll(".bb").forEach((el) => {
-      el.classList.toggle("selected", el.dataset.name === name);
+  let instructionIndex = null;
+  const isCFI = (inst) => /^\s*!CFI\b/.test(inst.text);
+  const hex = (address) => "0x" + address.toString(16);
+  const directBranch = /^(?:b(?:\.[a-z]+|l|lx|eq|ne|lt|le|gt|ge|cs|cc|hs|lo|hi|ls|mi|pl|vs|vc)?|cbn?z|tbn?z|j[a-z]*|loop[a-z]*|callq?|tail|beqz?|bnez?|bgez?|bltz?|bgtz?|blez?|bgeu|bltu)$/i;
+
+  function indexInstructions() {
+    const addresses = new Map();
+    const symbols = new Map();
+    const blocks = FUNCS.map((fn, fnIndex) => {
+      const labels = new Map();
+      for (const block of fn.blocks) {
+        for (const inst of block.insts) {
+          if (inst.data || isCFI(inst)) continue;
+          const destination = { fnIndex, block, address: inst.addr };
+          if (!labels.has(block.name)) labels.set(block.name, destination);
+          if (!addresses.has(inst.addr)) addresses.set(inst.addr, destination);
+          if (inst.addr === fn.address) {
+            symbols.set(fn.raw_name, destination);
+            symbols.set(fn.name, destination);
+          }
+        }
+      }
+      const entry = labels.get(fn.blocks.find((block) => block.entry)?.name);
+      if (entry && !symbols.has(fn.raw_name)) symbols.set(fn.raw_name, entry);
+      return labels;
     });
+    return { addresses, symbols, blocks };
+  }
+
+  function assemblyOperand(inst, block, token, target) {
+    const name = token.replace(/^"|"$/g, "");
+    const local = instructionIndex.blocks[current].get(name);
+    if (local) return local;
+
+    const { addresses } = instructionIndex;
+    const boltSymbol = name.match(/^SYMBOLat(0x[\da-f]+)$/i);
+    if (boltSymbol) return addresses.get(Number(boltSymbol[1]));
+    if (target !== token) return null;
+    const symbol = instructionIndex.symbols.get(name);
+    if (symbol) return symbol;
+    if (!/^(?:#[+-]?(?:0x[\da-f]+|\d+)|0x[\da-f]+|\d[\da-f]+)$/i.test(token)) return null;
+
+    if (!token.startsWith("#")) return addresses.get(parseInt(token, 16));
+    const value = parseInt(token.slice(1), 0);
+    // ARM's printed immediates are relative; a CFG edge can disambiguate absolute spellings.
+    const relative = addresses.get(inst.addr + value);
+    const absolute = addresses.get(value);
+    const isSuccessor = (destination) => destination?.fnIndex === current &&
+      block.succs.some((edge) => edge.target === destination.block.name);
+    return isSuccessor(relative) ? relative : isSuccessor(absolute) ? absolute : relative;
+  }
+
+  function renderInstruction(inst, block) {
+    const match = inst.text.match(/^(\s*(\S+)\s+)(.*?)(\s+#\s+.*)?$/);
+    if (!match || inst.data || isCFI(inst)) return esc(inst.text);
+    const [, prefix, mnemonic, operands, comment = ""] = match;
+    const addressOperand = directBranch.test(mnemonic) || /^(?:adr|lea[qwl]?)$/i.test(mnemonic);
+    const target = addressOperand ? operands.replace(/\s+<[^>]+>\s*$/, "").split(",").pop().trim() : null;
+    let cursor = 0;
+    let html = esc(prefix);
+    for (const token of operands.matchAll(/"[^"]+"|#[+-]?(?:0x[\da-f]+|\d+)|[\w.$][\w.$@/]*/gi)) {
+      const dest = assemblyOperand(inst, block, token[0], target);
+      if (!dest) continue;
+      html += esc(operands.slice(cursor, token.index));
+      html += `<button type="button" class="asm-link" data-fn="${dest.fnIndex}" data-block="${esc(dest.block.name)}" data-target="${dest.address}" title="Jump to ${hex(dest.address)}">${esc(token[0])}</button>`;
+      cursor = token.index + token[0].length;
+    }
+    return html + esc(operands.slice(cursor)) + esc(comment);
+  }
+
+  function renderSource(block) {
+    const entries = new Map();
+    const addressLinks = new Map();
+    for (const inst of block.insts) {
+      const location = inst.debug?.match(/^(.+?):([1-9]\d*)(?::(\d+))?$/);
+      if (!location || inst.data || isCFI(inst)) continue;
+      const [, name, line, column] = location;
+      const file = DATA.instruction_files?.[inst.addr] ?? name;
+      const key = `${file}:${line}`;
+      if (!entries.has(key)) entries.set(key, { file, line, addresses: [] });
+      const entry = entries.get(key);
+      entry.addresses.push(inst.addr);
+      addressLinks.set(inst.addr, `${key}${column ? ":" + column : ""}`);
+    }
+    const body = $("#source-body");
+    body.innerHTML = [...entries.values()].map(({ file, line, addresses }) => {
+      const name = file.replace(/^.*[\\/]/, "");
+      const code = DATA.source_lines?.[file]?.[line];
+      const buttons = addresses.map((address) => `<button type="button" class="chip" data-address="${address}" title="Go to instruction ${hex(address)}">${hex(address)}</button>`).join("");
+      return `<div class="source-entry"><p class="source-location" title="${esc(file)}">${esc(name)}:${line}</p>` +
+        (typeof code === "string" ? `<pre class="source-code"><code>${esc(code)}</code></pre>` : "") +
+        `<div class="source-addresses">${buttons}</div></div>`;
+    }).join("") || '<p class="empty">No source lines for this block</p>';
+    body.scrollTop = 0;
+    return addressLinks;
+  }
+
+  function highlightInstruction(address, showSource) {
+    const asm = $("#asm");
+    const row = asm.querySelector(`[data-address="${address}"]`);
+    if (!row) return;
+    asm.querySelector(".address-selected")?.classList.remove("address-selected");
+    row.classList.add("address-selected");
+
+    const source = $("#source-body");
+    source.querySelector(".selected")?.classList.remove("selected");
+    const entry = source.querySelector(`[data-address="${address}"]`)?.closest(".source-entry");
+    entry?.classList.add("selected");
+    if (showSource) {
+      sourceOpen = true;
+      updateSourcePanel();
+      entry?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    } else {
+      row.focus({ preventScroll: true });
+    }
+    row.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  function selectBlock(fn, name, scroll) {
     const B = fn.blocks.find((b) => b.name === name);
+    if (!B) return;
+    selected = name;
+    document.querySelectorAll(".bb, #blocklist button").forEach((el) => {
+      const isSelected = el.dataset.name === name;
+      el.classList.toggle("selected", isSelected);
+      if (el.tagName === "BUTTON") el.setAttribute("aria-pressed", String(isSelected));
+    });
     const head = $("#detail-head");
     const edges = $("#detail-edges");
     const asm = $("#asm");
-    if (!B) return;
     const share = B.count && fn.blocks.length ? ((B.count / Math.max(1, fn.hot || 0)) * 100).toFixed(1) : null;
     head.innerHTML =
       `<div class="bname">${esc(B.name)}</div>` +
@@ -407,16 +523,20 @@
     edges.innerHTML = group("Predecessors", B.preds.map((p) => chip(p, null))) +
       group("Successors", B.succs.map((s) => chip(s.target, s.count ?? s.inferred)));
 
-    const rows = B.insts
-      .map((I) => {
-        const isCfi = /^\s*!CFI/.test(I.text);
-        const src = I.debug ? I.debug.replace(/^.*\//, "") : "";
-        return `<tr class="${isCfi ? "cfi" : ""}"><td class="addr">0x${I.addr.toString(16)}</td>` +
-          `<td class="insn">${esc(I.text)}</td><td class="src">${esc(src)}</td></tr>`;
-      })
-      .join("");
-    asm.innerHTML = `<table>${rows}</table>`;
-    if (scroll) asm.scrollTop = 0;
+    instructionIndex ??= indexInstructions();
+    const sourceLinks = renderSource(B);
+    asm.innerHTML = `<table>${B.insts.map((inst) => {
+      const cfi = isCFI(inst);
+      const address = hex(inst.addr);
+      const source = cfi ? null : sourceLinks.get(inst.addr);
+      const label = source ? `<button type="button" class="asm-link" data-source="${inst.addr}" title="${esc(source)}">${address}</button>` : address;
+      return `<tr${cfi ? ' class="cfi"' : ` data-address="${inst.addr}" tabindex="-1"`}><td class="addr">${label}</td>` +
+        `<td class="insn">${renderInstruction(inst, B)}</td></tr>`;
+    }).join("")}</table>`;
+    if (scroll) {
+      asm.scrollTop = 0;
+      asm.scrollLeft = 0;
+    }
   }
 
   // ----------------------------------------------------------- callgraph
@@ -772,19 +892,25 @@
         `<div class="sub">${fmt(d.exec_count)} entries · Hottest BB <span class="hot">${fmt(d.hot)}</span></div>`;
     }
 
+    links.innerHTML = (d.fn >= 0 ? '<button type="button" class="open-cfg" id="cg-open">Open CFG</button>' : "") +
+      (renderCallGroups(d.id) || '<p class="empty">No calls</p>');
+    links.scrollTop = 0;
+  }
+
+  function renderCallGroups(functionId, showEmpty = false) {
     const callLink = (id, count) => {
       const name = esc(callNodes.get(id)?.display ?? id);
       return `<button type="button" class="funcrow call-link" data-id="${esc(id)}">` +
         `<span class="name" title="${name}">${name}</span><span class="cnt">${fmt(count)}</span></button>`;
     };
-    const group = (label, items) => items.length
-      ? `<section class="call-group"><h3>${label}</h3><div class="call-list">${items.join("")}</div></section>`
-      : "";
-    const callers = CG.edges.filter((e) => e.target === d.id).map((e) => callLink(e.source, e.count));
-    const callees = CG.edges.filter((e) => e.source === d.id).map((e) => callLink(e.target, e.count));
-    links.innerHTML = (d.fn >= 0 ? '<button type="button" class="open-cfg" id="cg-open">Open CFG</button>' : "") +
-      (group("Callers", callers) + group("Callees", callees) || '<p class="empty">No calls</p>');
-    links.scrollTop = 0;
+    const group = (label, items) => {
+      if (!items.length && !showEmpty) return "";
+      const body = items.length ? `<div class="call-list">${items.join("")}</div>` : '<p class="empty">None</p>';
+      return `<section class="call-group"><h3>${label}</h3>${body}</section>`;
+    };
+    const callers = CG.edges.filter((e) => e.target === functionId).map((e) => callLink(e.source, e.count));
+    const callees = CG.edges.filter((e) => e.source === functionId).map((e) => callLink(e.target, e.count));
+    return group("Callers", callers) + group("Callees", callees);
   }
 
   // ---------------------------------------------------------- navigation
@@ -803,8 +929,11 @@
     $("#graph-workspace").hidden = inOverview;
     $("#cg-toolbar").hidden = $("#view-callgraph").hidden = $("#cg-detail").hidden = inFunction;
     $("#func-head").hidden = $("#view-function").hidden = $("#cfg-detail").hidden = !inFunction;
+    $("#call-functions").hidden = inFunction;
+    $("#function-overview").hidden = !inFunction;
     $("#stage").dataset.view = next;
-    $("#inspector-title").textContent = inFunction ? "Basic block" : "Calls";
+    $("#function-panel-title").textContent = inFunction ? "Function overview" : "Functions";
+    $("#inspector-title").textContent = inFunction ? "Assembly" : "Calls";
     updatePanels();
   }
 
@@ -817,16 +946,35 @@
     }
   }
 
-  function showFunction(i, fromList = false) {
+  function renderFunctionOverview(fn) {
+    const stats = [
+      ["Address", hex(fn.address)],
+      ["Size", fmt(fn.size) + " B"],
+      ["Basic blocks", fmt(fn.bb_count)],
+      ["Entries", fmt(fn.exec_count)],
+      ["Hottest BB", fmt(fn.hot)],
+      ["Block exec sum", fmt(fn.flow)],
+      ["Profile match", fn.profile_acc == null ? "—" : fn.profile_acc.toFixed(1) + "%"],
+    ];
+    $("#func-stats").innerHTML = stats.map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`).join("");
+    $("#func-warning").hidden = !fn.unknown_cf;
+    $("#function-calls").innerHTML = renderCallGroups(fn.raw_name, true);
+    $("#blocklist").innerHTML = fn.blocks.map((block) =>
+      `<button type="button" class="funcrow" data-name="${esc(block.name)}" title="${hex(block.addr)}${block.entry ? " · Entry" : ""}">` +
+      `<span class="name">${esc(block.name)}</span><span class="cnt">${fmt(block.count)}</span></button>`
+    ).join("") || '<p class="empty">No basic blocks</p>';
+    $("#function-overview").scrollTop = 0;
+  }
+
+  function showFunction(i) {
     if (i < 0 || i >= FUNCS.length) return;
     const entering = activeView !== "function";
     if (entering) {
       parentView = activeView;
       parentFunction = i;
     }
-    if (entering || fromList) compactPanels.function = null;
+    if (entering) compactPanels.function = null;
     setView("function");
-    if (entering) renderList();
 
     if (current !== i) {
       current = i;
@@ -834,14 +982,7 @@
       selected = (fn.blocks.find((b) => b.entry) || fn.blocks[0])?.name ?? null;
       const name = $("#func-name");
       name.textContent = name.title = fn.display;
-      const acc = fn.profile_acc == null ? "—" : fn.profile_acc.toFixed(1) + "%";
-      $("#func-stats").innerHTML =
-        `<span>0x${fn.address.toString(16)} + 0x${fn.size.toString(16)}</span>` +
-        `<span>${fn.bb_count} BBs</span>` +
-        `<span>Entries ${fmt(fn.exec_count)}</span>` +
-        `<span>Hottest BB <b class="hot">${fmt(fn.hot)}</b></span>` +
-        `<span>Profile match ${acc}</span>` +
-        (fn.unknown_cf ? '<span class="warning">Unknown control flow</span>' : "");
+      renderFunctionOverview(fn);
 
       $("#cfg-empty").hidden = selected !== null;
       $("#cfg-no-selection").hidden = selected !== null;
@@ -852,9 +993,9 @@
       if (selected !== null) selectBlock(fn, selected, true);
     }
 
-    highlightList();
     $("#back-label").textContent = parentView === "overview" ? "Overview" : "Call graph";
-    if (entering || (compact.matches && fromList)) $("#func-name").focus({ preventScroll: true });
+    updateSourcePanel();
+    if (entering) $("#func-name").focus({ preventScroll: true });
   }
 
   // -------------------------------------------------------------- panels
@@ -863,24 +1004,38 @@
     functions: { container: $("#function-panel"), body: $("#function-panel-body"), button: $("#toggle-functions") },
     inspector: { container: $("#inspector"), body: $("#inspector-body"), button: $("#toggle-inspector") },
   };
+  const rightPanels = $("#right-panels");
+
+  function setPanel({ container, body, button }, open, name) {
+    if (!open && body.contains(document.activeElement)) button.focus({ preventScroll: true });
+    container.classList.toggle("collapsed", !open);
+    body.hidden = !open;
+    button.setAttribute("aria-expanded", String(open));
+    button.querySelector(".toggle-label").textContent = name;
+    const label = (open ? "Collapse " : "Expand ") + name.toLowerCase();
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+
+  const sourcePanel = { container: $("#source-panel"), body: $("#source-body"), button: $("#toggle-source") };
+
+  function updateSourcePanel() {
+    sourcePanel.container.hidden = activeView !== "function" || selected === null || panels.inspector.body.hidden;
+    if (sourcePanel.container.hidden && sourcePanel.container.contains(document.activeElement)) {
+      panels.inspector.button.focus({ preventScroll: true });
+    }
+    setPanel(sourcePanel, sourceOpen, "Source");
+  }
 
   function updatePanels() {
     if (activeView === "overview") return;
     const onCompact = compact.matches;
-    const shown = {
-      functions: onCompact ? compactPanels[activeView] === "functions" : functionsOpen,
-      inspector: onCompact ? compactPanels[activeView] === "inspector" : inspectorOpen[activeView],
-    };
-    for (const [id, { container, body, button }] of Object.entries(panels)) {
-      const open = shown[id];
-      if (!open && body.contains(document.activeElement)) button.focus({ preventScroll: true });
-      container.classList.toggle("collapsed", !open);
-      body.hidden = !open;
-      button.setAttribute("aria-expanded", String(open));
-      const label = (open ? "Collapse " : "Expand ") + (id === "functions" ? "functions" : $("#inspector-title").textContent.toLowerCase());
-      button.title = label;
-      button.setAttribute("aria-label", label);
-    }
+    const leftOpen = onCompact ? compactPanels[activeView] === "functions" : functionsOpen[activeView];
+    const rightOpen = onCompact ? compactPanels[activeView] === "inspector" : inspectorOpen[activeView];
+    setPanel(panels.functions, leftOpen, $("#function-panel-title").textContent);
+    setPanel(panels.inspector, rightOpen, $("#inspector-title").textContent);
+    rightPanels.classList.toggle("collapsed", !rightOpen);
+    updateSourcePanel();
     updateGraphViewport();
   }
 
@@ -894,11 +1049,15 @@
   for (const [id, { button, body }] of Object.entries(panels)) {
     button.addEventListener("click", () => {
       if (compact.matches) compactPanels[activeView] = body.hidden ? id : null;
-      else if (id === "functions") functionsOpen = !functionsOpen;
+      else if (id === "functions") functionsOpen[activeView] = body.hidden;
       else inspectorOpen[activeView] = body.hidden;
       updatePanels();
     });
   }
+  sourcePanel.button.addEventListener("click", () => {
+    sourceOpen = !sourceOpen;
+    updateSourcePanel();
+  });
   compact.addEventListener("change", updatePanels);
 
   // -------------------------------------------------------- canvas input
@@ -907,7 +1066,7 @@
     const h = stage.clientHeight;
     const inset = (panel) => panel.offsetWidth + 2 * panel.offsetTop;
     const left = compact.matches ? 0 : inset(panels.functions.container);
-    const right = compact.matches ? 0 : inset(panels.inspector.container);
+    const right = compact.matches ? 0 : inset(rightPanels);
     return { x: left, w: Math.max(1, w - left - right), h };
   }
 
@@ -1000,7 +1159,7 @@
       query = e.target.value.trim();
       $(id === "search" ? "#overview-search" : "#search").value = e.target.value;
       renderOverview();
-      if (activeView !== "overview") renderList();
+      if (activeView === "callgraph") renderList();
     });
   }
 
@@ -1033,14 +1192,7 @@
     cgGeom.labelElems.forEach((el) => { el.style.display = e.target.checked ? "" : "none"; });
   });
 
-  $("#cg-links").addEventListener("click", (e) => {
-    if (e.target.closest("#cg-open")) {
-      showFunction(callNodes.get(cgSelected).fn);
-      return;
-    }
-    const link = e.target.closest(".call-link");
-    if (!link) return;
-    const id = link.dataset.id;
+  function inspectCallNode(id) {
     if (callNodes.get(id)?.external && !$("#cg-external").checked) {
       $("#cg-external").checked = true;
       renderCallGraph();
@@ -1048,6 +1200,29 @@
     selectCGNode(id);
     $("#cg-info .bname").setAttribute("tabindex", "-1");
     $("#cg-info .bname").focus({ preventScroll: true });
+  }
+
+  $("#cg-links").addEventListener("click", (e) => {
+    if (e.target.closest("#cg-open")) {
+      showFunction(callNodes.get(cgSelected).fn);
+      return;
+    }
+    const link = e.target.closest(".call-link");
+    if (link) inspectCallNode(link.dataset.id);
+  });
+
+  $("#function-calls").addEventListener("click", (e) => {
+    const link = e.target.closest(".call-link");
+    if (!link) return;
+    const node = callNodes.get(link.dataset.id);
+    if (node.fn >= 0) {
+      showFunction(node.fn);
+      $("#func-name").focus({ preventScroll: true });
+    } else {
+      inspectorOpen.callgraph = true;
+      showSection("callgraph");
+      inspectCallNode(node.id);
+    }
   });
 
   $("#detail-edges").addEventListener("click", (e) => {
@@ -1058,8 +1233,33 @@
     $("#detail-head .bname").focus({ preventScroll: true });
   });
 
+  $("#blocklist").addEventListener("click", (e) => {
+    const block = e.target.closest("button[data-name]");
+    if (!block) return;
+    selectBlock(FUNCS[current], block.dataset.name, true);
+    if (compact.matches) revealInspector();
+  });
+
+  $("#asm").addEventListener("click", (e) => {
+    const link = e.target.closest(".asm-link");
+    if (!link) return;
+    if (link.dataset.source !== undefined) {
+      highlightInstruction(link.dataset.source, true);
+      return;
+    }
+    const { fn, block, target } = link.dataset;
+    showFunction(Number(fn));
+    if (block !== selected) selectBlock(FUNCS[current], block, true);
+    highlightInstruction(target, false);
+  });
+
+  $("#source-body").addEventListener("click", (e) => {
+    const link = e.target.closest("button[data-address]");
+    if (link) highlightInstruction(link.dataset.address, false);
+  });
+
   window.addEventListener("keydown", (e) => {
-    if (activeView !== "function" || e.target.closest("input, .asm")) return;
+    if (activeView !== "function" || e.target.closest("input, .asm, .source-body")) return;
     if (e.key === "ArrowRight" && current + 1 < FUNCS.length) showFunction(current + 1);
     if (e.key === "ArrowLeft" && current > 0) showFunction(current - 1);
   });
