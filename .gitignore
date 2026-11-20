@@ -1,3 +1,8 @@
+# files without suffix
+/*
+!/*.*
+!*/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -11,6 +16,6 @@ dist/
 # visasm / BOLT artifacts
 *.inst
 *.fdata
-*.visasm.html
-demo-report.html
+*.html
+*.json
 .trae-html-share-packages/
