@@ -11,12 +11,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .model import Function, hotness_max
+from .bolt import BoltError, _env, find_tool
+from .model import Function
 
 _ASSETS = Path(__file__).parent / "assets"
 _TRACE_ASSETS = Path(__file__).parent / "trace" / "assets"
 _ALIAS_RE = re.compile(r"\(\*\d+\)$")
 _SOURCE_RE = re.compile(r"(.+?):([1-9]\d*)(?::\d+)?$")
+_ASSEMBLY_ROW_RE = re.compile(r"^\s*([0-9a-fA-F]+):\s+(\S.*)$")
 
 
 def strip_alias(name: str) -> str:
@@ -48,14 +50,6 @@ def demangle(names: Iterable[str]) -> dict[str, str]:
     return result
 
 
-def _counts(func: Function) -> tuple[Optional[int], int]:
-    """Return (hottest block count, sum of block counts)."""
-    values = [b.exec_count for b in func.blocks if b.exec_count is not None]
-    if not values:
-        return None, 0
-    return max(values), sum(values)
-
-
 def build_callgraph(functions: list[Function], func_objs: list[dict]) -> dict:
     """Aggregate per-call-site counts into a function-level call graph.
 
@@ -69,7 +63,6 @@ def build_callgraph(functions: list[Function], func_objs: list[dict]) -> dict:
         nodes[obj["raw_name"]] = {
             "id": obj["raw_name"],
             "display": obj["display"],
-            "hot": obj["hot"] or 0,
             "flow": obj["flow"],
             "exec_count": obj["exec_count"],
             "bb_count": obj["bb_count"],
@@ -112,7 +105,7 @@ def build_callgraph(functions: list[Function], func_objs: list[dict]) -> dict:
             nodes[name] = {
                 "id": name,
                 "display": ext_display.get(name, name),
-                "hot": 0,
+                "flow": 0,
                 "flow": 0,
                 "exec_count": None,
                 "bb_count": 0,
@@ -137,21 +130,17 @@ def build_payload(
     profile: Optional[str],
     title: Optional[str] = None,
 ) -> dict:
-    hot_max = hotness_max(functions)
     names = {f.name for f in functions}
     demangled = demangle(names)
 
     out_funcs = []
     for f in functions:
-        hot, flow = _counts(f)
-        obj = f.to_json(hot_max)
+        obj = f.to_json()
         obj["display"] = demangled.get(strip_alias(f.name), strip_alias(f.name))
         obj["raw_name"] = strip_alias(f.name)
-        obj["hot"] = hot
-        obj["flow"] = flow
+        obj["flow"] = sum(block.exec_count or 0 for block in f.blocks)
         out_funcs.append(obj)
 
-    matched = sum(1 for f in functions if f.exec_count is not None and f.blocks)
     total_blocks = sum(len(f.blocks) for f in functions)
     callgraph = build_callgraph(functions, out_funcs)
     return {
@@ -159,12 +148,9 @@ def build_payload(
         "binary": str(Path(binary).resolve()),
         "profile": str(Path(profile).resolve()) if profile else None,
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "hot_max": hot_max,
         "summary": {
             "functions": len(functions),
-            "matched_functions": matched,
             "blocks": total_blocks,
-            "hottest_block": hot_max,
             "call_edges": len(callgraph["edges"]),
             "external_symbols": callgraph["external"],
         },
@@ -175,6 +161,38 @@ def build_payload(
 
 def _read_asset(name: str) -> str:
     return (_ASSETS / name).read_text(encoding="utf-8")
+
+
+def _disassemble(binary: str, llvm_bin: Optional[str]) -> dict:
+    """Read the executable sections in file order, independently of BOLT's CFG filter."""
+    try:
+        llvm_objdump = find_tool("llvm-objdump", llvm_bin)
+    except BoltError:
+        llvm_objdump = None
+    for tool in (llvm_objdump, shutil.which("objdump")):
+        if not tool:
+            continue
+        try:
+            result = subprocess.run(
+                [tool, "--disassemble", "--disassemble-zeroes", "--no-show-raw-insn", binary],
+                env=_env(), encoding="utf-8", errors="replace", capture_output=True, check=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            continue
+
+        rows = []
+        in_section = False
+        for line in result.stdout.splitlines():
+            line = line.rstrip()
+            if line.startswith("Disassembly of section "):
+                in_section = True
+            if not in_section or not line:
+                continue
+            match = _ASSEMBLY_ROW_RE.fullmatch(line)
+            rows.append([int(match[1], 16), match[2]] if match else line)
+        if any(isinstance(row, list) for row in rows):
+            return {"assembly": rows}
+    return {}
 
 
 def _symbolize_sources(binary: str, addresses: Iterable[int], llvm_bin: Optional[str]) -> dict:
@@ -253,6 +271,7 @@ def render(payload: dict) -> str:
     css = _read_asset("report.css")
     script = _read_asset("report.js")
     trace = payload.get("timeline") is not None
+    html = html.replace("__VISASM_REPORT_KIND__", "Trace" if trace else "Profile")
 
     def trace_asset(name: str) -> str:
         return (_TRACE_ASSETS / name).read_text(encoding="utf-8") if trace else ""
@@ -268,4 +287,5 @@ def render(payload: dict) -> str:
 
 def write_report(payload: dict, output: str, *, llvm_bin: Optional[str] = None) -> None:
     source_mapping = _source_mapping(payload, llvm_bin)
-    Path(output).write_text(render({**payload, **source_mapping}), encoding="utf-8")
+    assembly = _disassemble(payload["binary"], llvm_bin)
+    Path(output).write_text(render({**payload, **source_mapping, **assembly}), encoding="utf-8")

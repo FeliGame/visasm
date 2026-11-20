@@ -57,7 +57,7 @@ class Block:
     def size(self) -> int:
         return len([i for i in self.instructions if not i.is_data])
 
-    def to_json(self, address: int, layout_index: int, hot_max: int) -> dict:
+    def to_json(self, address: int, layout_index: int) -> dict:
         last = self.instructions[-1].text if self.instructions else ""
         return {
             "name": self.name,
@@ -102,14 +102,13 @@ class Function:
     address: int = 0
     size: int = 0
     exec_count: Optional[int] = None
-    profile_acc: Optional[float] = None
     bb_count: int = 0
     is_simple: bool = True
     layout: list[str] = field(default_factory=list)
     blocks: list[Block] = field(default_factory=list)
     unknown_cf: bool = False
 
-    def to_json(self, hot_max: int) -> dict:
+    def to_json(self) -> dict:
         by_name = {b.name: b for b in self.blocks}
         order = [n for n in self.layout if n in by_name]
         if len(order) != len(self.blocks):
@@ -120,12 +119,11 @@ class Function:
             "address": self.address,
             "size": self.size,
             "exec_count": self.exec_count,
-            "profile_acc": self.profile_acc,
             "bb_count": len(self.blocks),
             "is_simple": self.is_simple,
             "unknown_cf": self.unknown_cf,
             "blocks": [
-                by_name[n].to_json(self.address, idx, hot_max)
+                by_name[n].to_json(self.address, idx)
                 for idx, n in enumerate(order)
             ],
             "layout": order,
@@ -308,8 +306,6 @@ def parse_print_cfg(text: str) -> list[Function]:
         func.unknown_cf = "Unknown CF" in header
         if "Exec Count" in header:
             func.exec_count = int(header["Exec Count"])
-        if "Profile Acc" in header:
-            func.profile_acc = float(header["Profile Acc"].rstrip("%"))
         if "BB Layout" in header:
             func.layout = _parse_layout(header["BB Layout"])
 
@@ -377,14 +373,3 @@ def parse_print_cfg(text: str) -> list[Function]:
         functions.append(func)
 
     return functions
-
-
-def hotness_max(functions: list[Function]) -> int:
-    best = 0
-    for f in functions:
-        if f.exec_count:
-            best = max(best, f.exec_count)
-        for b in f.blocks:
-            if b.exec_count:
-                best = max(best, b.exec_count)
-    return best or 1

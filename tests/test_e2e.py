@@ -76,7 +76,10 @@ def test_profile_pipeline(demo, monkeypatch):
     assert list(directory.glob("run-*/profile.fdata"))
 
     data = json.loads(model.read_text())
-    assert data["summary"]["matched_functions"] >= 3
+    assert data["summary"]["functions"] >= 3
+    assert not {"matched_functions", "hottest_block"} & data["summary"].keys()
+    assert "hot_max" not in data
+    assert all(not {"hot", "profile_acc"} & fn.keys() for fn in data["functions"])
 
     funcs = {f["display"]: f for f in data["functions"]}
 
@@ -110,6 +113,8 @@ def test_profile_pipeline(demo, monkeypatch):
 
     html = report.read_text()
     assert "<svg" in html and "main" in html
+    assert '<div class="brand">VISASM Profile</div>' in html
+    assert "Hottest BB" not in html and "Profile match" not in html
     assert '"blocks"' in html  # embedded model
     assert '"callgraph"' in html
     assert "tab-callgraph" in html
@@ -119,6 +124,22 @@ def test_profile_pipeline(demo, monkeypatch):
 def test_report_requires_binary(tmp_path):
     with pytest.raises(SystemExit):
         main(["report", str(tmp_path / "missing")])
+
+
+def test_assembly_includes_sections_outside_cfg_filter(demo):
+    if not _tool("llvm-objdump") and not shutil.which("objdump"):
+        pytest.skip("llvm-objdump or objdump is required")
+
+    binary, tmp = demo
+    report = tmp / "filtered-assembly.html"
+    assert main(["report", str(binary), "--function", "main", "-o", str(report)]) == 0
+
+    html = report.read_text(encoding="utf-8")
+    embedded = html.split("const DATA = ", 1)[1].split(";\n</script>", 1)[0]
+    data = json.loads(embedded)
+    assert [fn["raw_name"] for fn in data["functions"]] == ["main"]
+    assert "Disassembly of section .plt:" in data["assembly"]
+    assert any(isinstance(row, str) and row.endswith(" <_start>:") for row in data["assembly"])
 
 
 def test_trace_pipeline(demo, monkeypatch):
@@ -146,7 +167,8 @@ def test_trace_pipeline(demo, monkeypatch):
     assert len(trace["events"]) > 100_000
     timestamps = [time for time, _, _ in trace["events"]]
     assert timestamps == sorted(timestamps)
-    assert 0 <= timestamps[0] <= timestamps[-1] <= trace["duration_ns"]
+    end = trace["thread_end_ns"][str(trace["main_thread"])]
+    assert 0 <= timestamps[0] <= timestamps[-1] < end < trace["duration_ns"]
     visits = {}
     for _, probe, thread in trace["events"]:
         assert thread == trace["main_thread"]
@@ -166,3 +188,7 @@ def test_trace_pipeline(demo, monkeypatch):
     assert classify_entries == (iterations + 6) // 7
     html = report.read_text()
     assert "timeline-density" in html and "Recorded BB entries" not in html
+    assert '<div class="brand">VISASM Trace</div>' in html
+    assert "Before instrumentation" in html and "With BB instrumentation" in html
+    assert "Runtime ratio" not in html
+    assert "Both runs use QEMU" not in html and "Click or drag the playhead" not in html

@@ -1,4 +1,4 @@
-"""Capture visits to BOLT basic block entries with a QEMU user-mode plugin."""
+"""Capture BOLT basic block timing with a QEMU user-mode plugin."""
 
 from __future__ import annotations
 
@@ -16,7 +16,9 @@ from ..bolt import BoltError, _env
 
 
 _HEADER = struct.Struct("=5Q")
-_EVENT = struct.Struct("=QII")
+_PROBE_SITE = struct.Struct("=QII")
+_NO_PROBE = (1 << 32) - 1
+_EVENT = struct.Struct("=QQII")
 _ELF_PROGRAM_HEADER = struct.Struct("<IIQQQQQQ")
 _MACHINES = {62: "x86_64", 183: "aarch64"}
 
@@ -47,18 +49,29 @@ def _elf_target(binary: Path) -> tuple[str, int]:
     return _MACHINES[machine], min(code)
 
 
-def _probe_locations(functions: list[dict]) -> tuple[list[int], list[list[int]]]:
-    locations = {}
+def _probe_locations(functions: list[dict]) -> tuple[list[tuple[int, int, int]], list[list[int]]]:
+    entries = {}
+    tails = {}
+    blocks = []
     for fn_index, fn in enumerate(functions):
         for block_index, block in enumerate(fn["blocks"]):
-            for inst in block["insts"]:
-                if not inst.get("data") and not inst["text"].lstrip().startswith("!CFI"):
-                    locations.setdefault(inst["addr"], [fn_index, block_index])
-                    break
-    addresses = sorted(locations)
-    if not addresses:
+            addresses = [
+                inst["addr"] for inst in block["insts"]
+                if not inst.get("data") and not inst["text"].lstrip().startswith("!CFI")
+            ]
+            if not addresses or addresses[0] in entries:
+                continue
+            probe = len(blocks)
+            entries[addresses[0]] = probe
+            tails.setdefault(addresses[-1], probe)
+            blocks.append([fn_index, block_index])
+    if not blocks:
         raise BoltError("BOLT found no basic block entry instructions to trace")
-    return addresses, [locations[address] for address in addresses]
+    sites = [
+        (address, entries.get(address, _NO_PROBE), tails.get(address, _NO_PROBE))
+        for address in sorted(entries.keys() | tails.keys())
+    ]
+    return sites, blocks
 
 
 def _build_plugin(output: Path, include: str | None) -> None:
@@ -102,24 +115,36 @@ def _timed_run(command: list[str], label: str, verbose: bool) -> tuple[int, int]
     return start, duration
 
 
-def _read_events(trace: mmap.mmap, offset: int, start: int, duration: int) -> dict:
-    _, probe_count, count, main_thread, error = _HEADER.unpack_from(trace)
+def _read_events(trace: mmap.mmap, offset: int, start: int, duration: int, probe_count: int) -> dict:
+    _, _, count, main_thread, error = _HEADER.unpack_from(trace)
     if not main_thread:
         raise BoltError("QEMU did not initialize the trace plugin (requires a plugin-enabled build)")
     if error:
         raise BoltError(f"QEMU could not record the complete trace: {os.strerror(error)}")
     events = []
+    last_by_thread = {}
     end = offset + count * _EVENT.size
     if end > len(trace):
         raise BoltError("QEMU trace file is missing BB records")
     with memoryview(trace)[offset:end] as records:
-        for timestamp, probe, thread in _EVENT.iter_unpack(records):
+        for timestamp, finished, probe, thread in _EVENT.iter_unpack(records):
             relative = timestamp - start
             if probe >= probe_count or not 0 <= relative <= duration or not thread:
                 raise BoltError("invalid record in QEMU basic block trace")
+            if finished and not timestamp <= finished <= start + duration:
+                raise BoltError("invalid end timestamp in QEMU basic block trace")
             events.append([relative, probe, thread])
+            last = last_by_thread.get(thread)
+            if last is None or timestamp >= last[0]:
+                last_by_thread[thread] = (timestamp, finished)
     events.sort(key=lambda event: event[0])
-    return {"events": events, "main_thread": main_thread}
+    return {
+        "events": events,
+        "main_thread": main_thread,
+        "thread_end_ns": {
+            thread: finished - start for thread, (_, finished) in last_by_thread.items() if finished
+        },
+    }
 
 
 def collect_timeline(
@@ -137,7 +162,7 @@ def collect_timeline(
     emulator = shutil.which(qemu or f"qemu-{machine}")
     if not emulator:
         raise BoltError(f"cannot find {qemu or f'qemu-{machine}'}; pass --qemu <path>")
-    addresses, blocks = _probe_locations(functions)
+    sites, blocks = _probe_locations(functions)
 
     with tempfile.TemporaryDirectory(prefix="visasm-trace-") as directory:
         plugin = Path(directory) / "qemu_plugin.so"
@@ -156,15 +181,15 @@ def collect_timeline(
 
         print("[3/3] recording BB entries under QEMU", flush=True)
         with (Path(directory) / "events.bin").open("w+b") as records:
-            records.write(_HEADER.pack(code_start, len(addresses), 0, 0, 0))
-            records.write(struct.pack(f"={len(addresses)}Q", *addresses))
+            records.write(_HEADER.pack(code_start, len(sites), 0, 0, 0))
+            records.write(b"".join(_PROBE_SITE.pack(*site) for site in sites))
             offset = records.tell()
             records.flush()
             fd = records.fileno()
             command = [emulator, "-plugin", f"file={plugin},output={records.name}", str(binary), *args]
             start, duration = _timed_run(command, "QEMU trace", verbose)
             with mmap.mmap(fd, 0, access=mmap.ACCESS_READ) as trace:
-                result = _read_events(trace, offset, start, duration)
+                result = _read_events(trace, offset, start, duration, len(blocks))
 
     return {
         **result,

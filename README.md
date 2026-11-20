@@ -4,12 +4,14 @@ visasm 用 LLVM 22 BOLT 从 ELF 机器码提取基本块（BB）和控制流图�
 
 | 命令 | 用途 | 额外依赖 |
 | --- | --- | --- |
-| `visasm profile` | 用 BOLT 统计执行次数，查看热点 CFG 和调用图 | BOLT 插桩运行库 `libbolt_rt_instr.a` |
-| `visasm trace` | 用 QEMU 记录 BB 入口时间戳，拖动或播放执行时序 | [启用插件的 QEMU 和匹配的头文件](docs/qemu-setup.md) |
+| `visasm profile` | 用 BOLT 统计执行次数，查看热点 CFG 和调用图 | BOLT |
+| `visasm trace` | 用 QEMU 记录 BB 入口时间戳，拖动或播放执行时序 | [QEMU](docs/qemu-setup.md) |
 
 ## 公共环境
 
-需要 Python 3.9+、LLVM 22 的 `llvm-bolt` 和保留重定位信息的原始 ELF。若 BOLT 不在 PATH 中，可设置 `VISASM_BOLT_BIN`，或给命令传入 `--llvm-bin DIR`。
+Python 3.9+
+profile功能需要llvm-bolt 和保留重定位信息的原始 ELF。
+trace功能需要QEMU 和 llvm-objdump。
 
 ```bash
 python3 -m venv .venv
@@ -63,9 +65,7 @@ visasm trace ./demo --qemu "$QEMU_BIN" --qemu-include "$QEMU_INCLUDE" \
   --function 'main|classify' -- 2000
 ```
 
-打开 `visasm-output/trace/demo/report.html`。**Overview** 对比同一 QEMU 环境下插桩前后的整程墙钟耗时。目标程序会使用同一组参数执行两次。**Timeline** 按线程展示最近一次记录的 BB 入口，并联动高亮 CFG 和汇编。事件之间可能经过未追踪的代码、系统调用或线程调度。
-
-采集覆盖主进程及其线程中主 ELF 的 BB 入口，持续到程序退出。临时文件和报告随事件数增长。
+打开 `visasm-output/trace/demo/report.html`。
 
 - `--qemu PATH` 指定启用插件的 QEMU 用户态程序。默认按目标 ELF 架构在 PATH 中查找。
 - `--qemu-include DIR` 指定包含同版本 `qemu-plugin.h` 的目录。

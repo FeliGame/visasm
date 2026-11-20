@@ -1,0 +1,33 @@
+<section class="timeline" id="timeline" aria-label="Basic block timeline" hidden>
+  <div class="timeline-controls" id="timeline-controls">
+    <button class="open-cfg" id="timeline-play" type="button">Play</button>
+    <button class="timeline-step" id="timeline-prev" aria-label="Previous BB entry" type="button">←</button>
+    <button class="timeline-step" id="timeline-next" aria-label="Next BB entry" type="button">→</button>
+    <label>Thread <select id="timeline-thread"></select></label>
+    <label>Playback
+      <select id="timeline-speed">
+        <option value="entries">8 BB entries/sec</option>
+        <option value="10">Fit in 10 seconds</option>
+        <option value="1x">Recorded time (1×)</option>
+      </select>
+    </label>
+    <div class="timeline-zoom" role="group" aria-label="Timeline zoom">
+      <button class="timeline-step" id="timeline-zoom-out" type="button" aria-label="Zoom out on timeline">−</button>
+      <button class="timeline-step" id="timeline-zoom-in" type="button" aria-label="Zoom in on timeline">+</button>
+      <button class="timeline-step" id="timeline-fit" type="button">Fit</button>
+    </div>
+    <span class="cg-hotscale" title="Cumulative visits on a logarithmic scale">Cold <i aria-hidden="true"></i> Hot</span>
+    <span class="timeline-position" id="timeline-position"></span>
+  </div>
+  <div id="timeline-axis">
+    <div id="timeline-time" role="slider" tabindex="0" aria-label="Trace time" aria-orientation="horizontal">
+      <canvas id="timeline-density" width="400" height="30" aria-hidden="true"></canvas>
+      <span id="timeline-playhead" aria-hidden="true"></span>
+    </div>
+    <div class="timeline-axis-labels">
+      <span id="timeline-start"></span><span id="timeline-end"></span>
+    </div>
+  </div>
+  <div class="timeline-location" id="timeline-location"></div>
+  <p class="timeline-note" id="timeline-note" hidden></p>
+</section>

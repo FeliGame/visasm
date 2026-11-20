@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>visasm report</title>
+<title>VISASM __VISASM_REPORT_KIND__</title>
 <style>
 /*__VISASM_CSS__*/
 </style>
 </head>
 <body>
 <header class="top">
-  <div class="brand">visasm</div>
+  <div class="brand">VISASM __VISASM_REPORT_KIND__</div>
   <div class="report-name" id="report-name"></div>
   <nav class="report-nav" aria-label="Report">
     <button id="tab-overview" type="button" aria-current="page">Overview</button>
@@ -34,11 +34,9 @@
           <thead>
             <tr>
               <th scope="col"><button data-sort="name">Function</button></th>
-              <th scope="col" class="num" aria-sort="descending"><button data-sort="hot">Hottest BB</button></th>
-              <th scope="col" class="num"><button data-sort="flow">Block exec sum</button></th>
+              <th scope="col" class="num" aria-sort="descending"><button data-sort="flow">Block exec sum</button></th>
               <th scope="col" class="num"><button data-sort="entry">Entries</button></th>
               <th scope="col" class="num"><button data-sort="blocks">BBs</button></th>
-              <th scope="col" class="num"><button data-sort="acc">Profile match</button></th>
             </tr>
           </thead>
           <tbody id="overview-body"></tbody>
@@ -52,7 +50,7 @@
       <label class="cg-opt"><input type="checkbox" id="cg-external" checked> External calls</label>
       <label class="cg-opt"><input type="checkbox" id="cg-labels"> Edge counts</label>
       <span class="cg-stat" id="cg-stat"></span>
-      <span class="cg-hotscale" title="Node color by hottest basic block">Cold <i></i> Hot</span>
+      <span class="cg-hotscale" title="Node color by total block executions">Cold <i></i> Hot</span>
     </div>
     <div class="func-head" id="func-head" hidden>
       <button type="button" id="back-to-report" class="back"><span aria-hidden="true">←</span> <span id="back-label"></span></button>
@@ -78,6 +76,9 @@
             </marker>
             <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 0 L 10 5 L 0 10 z" fill="#d46a35"></path>
+            </marker>
+            <marker id="arrow-trace" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path>
             </marker>
           </defs>
           <g id="canvas"></g>
@@ -127,6 +128,7 @@
               <p class="empty" id="cfg-no-selection" hidden>No block selected</p>
               <div class="dhead" id="detail-head"></div>
               <div class="edges" id="detail-edges"></div>
+              <p class="empty" id="asm-unavailable" hidden>Full disassembly unavailable. Showing instructions from the report CFG.</p>
               <div class="asm" id="asm"></div>
             </div>
           </div>

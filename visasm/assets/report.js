@@ -6,11 +6,18 @@
 
   const FUNCS = DATA.functions;
   const functionIndices = new Map(FUNCS.map((fn, index) => [fn, index]));
-  const HOT_LOG = Math.log1p(DATA.hot_max || 1);
+  let cfgCountMax = 1;
+  for (const fn of FUNCS) {
+    cfgCountMax = Math.max(cfgCountMax, fn.exec_count ?? 0);
+    for (const block of fn.blocks) {
+      cfgCountMax = Math.max(cfgCountMax, block.count ?? 0);
+    }
+  }
+  const cfgCountLog = Math.log1p(cfgCountMax);
   const timeline = DATA.timeline;
 
   let query = "";
-  let sortKey = "hot";
+  let sortKey = "flow";
   let sortDir = -1;
   let current = -1;
   let selected = null;
@@ -57,10 +64,8 @@
     const c = c0.map((v, j) => Math.round(v + (c1[j] - v) * u));
     return `rgb(${c[0]} ${c[1]} ${c[2]})`;
   }
-  const heatOf = (count) => heat(count ? Math.log1p(count) / HOT_LOG : 0);
-
   // ------------------------------------------------------------- sidebar
-  const hotOrder = FUNCS.slice().sort((a, b) => (b.hot || 0) - (a.hot || 0));
+  const flowOrder = FUNCS.slice().sort((a, b) => b.flow - a.flow);
 
   function filtered(items) {
     if (!query) return items.slice();
@@ -76,12 +81,10 @@
     const s = DATA.summary;
     $("#report-name").textContent = DATA.title;
     $("#report-name").title = DATA.binary;
-    document.title = `visasm · ${DATA.title}`;
+    document.title += ` · ${DATA.title}`;
     $("#summary").innerHTML = [
       ["Functions", fmt(s.functions)],
-      ["Profiled functions", fmt(s.matched_functions)],
       ["Basic blocks", fmt(s.blocks)],
-      ["Hottest BB", fmt(s.hottest_block)],
     ]
       .map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`)
       .join("");
@@ -89,7 +92,7 @@
   }
 
   function renderList() {
-    const source = hotOrder.filter((fn) => cgGeom.byId.has(fn.raw_name));
+    const source = flowOrder.filter((fn) => cgGeom.byId.has(fn.raw_name));
     const items = filtered(source);
     const box = $("#funclist");
     box.innerHTML = "";
@@ -101,7 +104,7 @@
       row.dataset.id = fn.raw_name;
       row.innerHTML =
         `<span class="name" title="${esc(fn.display)}">${esc(fn.display)}</span>` +
-        `<span class="cnt" title="Hottest basic block">${fmt(fn.hot)}</span>`;
+        `<span class="cnt" title="Total block executions">${fmt(fn.flow)}</span>`;
       row.addEventListener("click", () => selectCGNode(fn.raw_name));
       frag.appendChild(row);
     });
@@ -131,8 +134,7 @@
       if (key === "name") return f.display.toLowerCase();
       if (key === "entry") return f.exec_count || 0;
       if (key === "blocks") return f.bb_count;
-      if (key === "acc") return f.profile_acc == null ? -1 : f.profile_acc;
-      return key === "flow" ? f.flow : f.hot || 0;
+      return f.flow;
     };
     items.sort((a, b) => {
       const va = val(a), vb = val(b);
@@ -148,19 +150,17 @@
       const index = functionIndices.get(fn);
       tr.dataset.function = index;
       tr.innerHTML =
-        `<td class="fname"><button type="button" title="${esc(fn.display)}"><span class="heatcell" aria-hidden="true" style="background:${heatOf(fn.hot)}"></span>${esc(short(fn.display, 70))}</button></td>` +
-        `<td class="num">${fmt(fn.hot)}</td>` +
+        `<td class="fname"><button type="button" title="${esc(fn.display)}">${esc(short(fn.display, 70))}</button></td>` +
         `<td class="num">${fmt(fn.flow)}</td>` +
         `<td class="num">${fmt(fn.exec_count)}</td>` +
-        `<td class="num">${fn.bb_count}</td>` +
-        `<td class="num">${fn.profile_acc == null ? "\u2014" : fn.profile_acc.toFixed(0) + "%"}</td>`;
+        `<td class="num">${fn.bb_count}</td>`;
       tr.addEventListener("click", () => showFunction(index));
       frag.appendChild(tr);
     });
     if (!items.length || items.length > 1500) {
       const row = document.createElement("tr");
       const cell = row.insertCell();
-      cell.colSpan = 6;
+      cell.colSpan = 4;
       cell.className = "empty";
       cell.textContent = items.length ? `${fmt(items.length - 1500)} more functions. Refine the filter to find them.` : "No matching functions";
       frag.appendChild(row);
@@ -259,6 +259,31 @@
   }
 
   // ------------------------------------------------------------------ cfg
+  let cfgNodes = [];
+  let cfgEdges = [];
+
+  function paintCfg() {
+    const activity = timelineOpen ? timelineActivity : null;
+    const hotLog = activity?.hotLog ?? cfgCountLog;
+    for (const { block, rect, label } of cfgNodes) {
+      const count = activity ? activity.blockCount(block) : block.count;
+      rect.setAttribute("fill", heat(count ? Math.log1p(count) / hotLog : 0));
+      label.textContent = fmt(count);
+    }
+    for (const { successor, path, label } of cfgEdges) {
+      const count = activity ? activity.edgeCounts.get(successor) || 0 : successor.count ?? successor.inferred;
+      const heatLevel = count ? Math.log1p(count) / hotLog : 0;
+      const visited = activity && count > 0;
+      const hot = !activity && heatLevel > 0.45;
+      path.classList.toggle("hot", hot);
+      path.setAttribute("marker-end", visited ? "url(#arrow-trace)" : hot ? "url(#arrow-hot)" : "url(#arrow)");
+      path.setAttribute("stroke-width", (1.1 + 3.4 * heatLevel).toFixed(2));
+      path.setAttribute("opacity", visited ? "1" : (0.55 + 0.45 * heatLevel).toFixed(2));
+      path.style.stroke = visited ? heat(heatLevel) : "";
+      label.textContent = count > 0 ? fmt(count) : "";
+    }
+  }
+
   function edgePath(a, b, isBack) {
     const sx = a.x + a.w / 2, sy = a.y + a.h;
     const tx = b.x + b.w / 2, ty = b.y;
@@ -279,6 +304,8 @@
   function renderCfg(fn) {
     const g = $("#canvas");
     g.innerHTML = "";
+    cfgNodes = [];
+    cfgEdges = [];
     if (!fn.blocks.length) {
       graphs.function.bbox = null;
       return;
@@ -301,30 +328,21 @@
         if (!b) return;
         const back = geom.back.has(i + ">" + j) || geom.rank[j] <= geom.rank[i];
         const p = edgePath(a, b, back);
-        const cnt = S.count == null ? S.inferred : S.count;
-        const t = cnt ? Math.log1p(cnt) / HOT_LOG : 0;
         const path = document.createElementNS(SVGNS, "path");
         path.setAttribute("d", p.d);
-        path.setAttribute("class", "edge" + (back ? " back" : "") + (t > 0.45 ? " hot" : ""));
-        path.setAttribute("marker-end", t > 0.45 ? "url(#arrow-hot)" : "url(#arrow)");
-        path.setAttribute("stroke-width", (1.1 + 3.4 * t).toFixed(2));
-        path.setAttribute("opacity", (0.55 + 0.45 * t).toFixed(2));
-        path.setAttribute("stroke", t > 0 ? heat(t) : "#b9c5d5");
+        path.setAttribute("class", "edge" + (back ? " back" : ""));
         edgeLayer.appendChild(path);
 
-        if (cnt != null && cnt > 0) {
-          const label = document.createElementNS(SVGNS, "text");
-          label.setAttribute("class", "edge-label");
-          label.setAttribute("x", p.mid.x);
-          label.setAttribute("y", p.mid.y);
-          label.setAttribute("text-anchor", "middle");
-          label.textContent = fmt(cnt);
-          edgeLayer.appendChild(label);
-        }
+        const label = document.createElementNS(SVGNS, "text");
+        label.setAttribute("class", "edge-label");
+        label.setAttribute("x", p.mid.x);
+        label.setAttribute("y", p.mid.y);
+        label.setAttribute("text-anchor", "middle");
+        edgeLayer.appendChild(label);
+        cfgEdges.push({ successor: S, path, label });
       });
     });
 
-    const fnHot = Math.max(1, fn.hot || 0);
     fn.blocks.forEach((B, i) => {
       const a = geom.nodes.get(i);
       if (!a) return;
@@ -338,7 +356,6 @@
       rect.setAttribute("y", a.y);
       rect.setAttribute("width", a.w);
       rect.setAttribute("height", a.h);
-      rect.setAttribute("fill", heatOf(B.count));
       node.appendChild(rect);
 
       const name = document.createElementNS(SVGNS, "text");
@@ -369,9 +386,8 @@
       cnt.setAttribute("class", "count");
       cnt.setAttribute("x", a.x + 12);
       cnt.setAttribute("y", a.y + 55);
-      const share = B.count && fnHot ? ((B.count / fnHot) * 100).toFixed(1) + "%" : "";
-      cnt.textContent = `${fmt(B.count)}${share ? "  ·  " + share : ""}`;
       node.appendChild(cnt);
+      cfgNodes.push({ block: B, rect, label: cnt });
 
       node.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -387,6 +403,9 @@
 
   // -------------------------------------------------------------- detail
   let instructionIndex = null;
+  let assemblyBlocks;
+  let selectedAssemblyGroups = [];
+  let assemblyRow = null;
   const sourceView = {
     file: null,
     renderedFile: undefined,
@@ -410,7 +429,7 @@
       for (const block of fn.blocks) {
         for (const inst of block.insts) {
           if (inst.data || isCFI(inst)) continue;
-          const destination = { fnIndex, block, address: inst.addr };
+          const destination = { fnIndex, block, address: inst.addr, instruction: inst };
           if (!labels.has(block.name)) labels.set(block.name, destination);
           if (!addresses.has(inst.addr)) addresses.set(inst.addr, destination);
           if (inst.addr === fn.address) {
@@ -438,9 +457,9 @@
     return { addresses, symbols, blocks, functionSources, sourceLines };
   }
 
-  function assemblyOperand(inst, block, token, target) {
+  function assemblyOperand(inst, destination, token, target) {
     const name = token.replace(/^"|"$/g, "");
-    const local = instructionIndex.blocks[current].get(name);
+    const local = instructionIndex.blocks[destination?.fnIndex]?.get(name);
     if (local) return local;
 
     const { addresses } = instructionIndex;
@@ -456,12 +475,12 @@
     // ARM's printed immediates are relative; a CFG edge can disambiguate absolute spellings.
     const relative = addresses.get(inst.addr + value);
     const absolute = addresses.get(value);
-    const isSuccessor = (destination) => destination?.fnIndex === current &&
-      block.succs.some((edge) => edge.target === destination.block.name);
+    const isSuccessor = (candidate) => candidate && candidate.fnIndex === destination?.fnIndex &&
+      destination.block.succs.some((edge) => edge.target === candidate.block.name);
     return isSuccessor(relative) ? relative : isSuccessor(absolute) ? absolute : relative;
   }
 
-  function renderInstruction(inst, block) {
+  function renderInstruction(inst, destination) {
     const match = inst.text.match(/^(\s*(\S+)\s+)(.*?)(\s+#\s+.*)?$/);
     if (!match || inst.data || isCFI(inst)) return esc(inst.text);
     const [, prefix, mnemonic, operands, comment = ""] = match;
@@ -470,7 +489,7 @@
     let cursor = 0;
     let html = esc(prefix);
     for (const token of operands.matchAll(/"[^"]+"|#[+-]?(?:0x[\da-f]+|\d+)|[\w.$][\w.$@/]*/gi)) {
-      const dest = assemblyOperand(inst, block, token[0], target);
+      const dest = assemblyOperand(inst, destination, token[0], target);
       if (!dest) continue;
       html += esc(operands.slice(cursor, token.index));
       html += `<button type="button" class="asm-link" data-fn="${dest.fnIndex}" data-block="${esc(dest.block.name)}" data-target="${dest.address}" title="Jump to ${hex(dest.address)}">${esc(token[0])}</button>`;
@@ -575,30 +594,93 @@
     renderSource(true);
   }
 
-  function highlightInstruction(address, showSource) {
+  function scrollAssemblyTo(row) {
     const asm = $("#asm");
-    const row = asm.querySelector(`[data-address="${address}"]`);
-    if (!row) return;
-    asm.querySelector(".address-selected")?.classList.remove("address-selected");
-    row.classList.add("address-selected");
+    if (!row || !asm.clientHeight) return;
+    const viewport = asm.getBoundingClientRect();
+    const bounds = row.getBoundingClientRect();
+    if (bounds.top < viewport.top) asm.scrollTop += bounds.top - viewport.top;
+    else if (bounds.bottom > viewport.bottom) asm.scrollTop += bounds.bottom - viewport.bottom;
+  }
 
-    sourceView.activeInstruction = Number(address);
+  function highlightInstruction(row, showSource) {
+    assemblyRow?.classList.remove("address-selected");
+    assemblyRow = row;
+    assemblyRow?.classList.add("address-selected");
+    sourceView.activeInstruction = row?.dataset.address === undefined ? null : Number(row.dataset.address);
     const location = instructionIndex.functionSources[current].instructions.get(sourceView.activeInstruction);
     if (location) sourceView.file = location.file;
     if (showSource) {
       sourceOpen = true;
       updateSourcePanel();
-    } else {
-      row.focus({ preventScroll: true });
     }
     renderSource(true);
-    row.scrollIntoView({ block: "nearest", inline: "nearest" });
+    scrollAssemblyTo(row);
   }
 
-  function jumpToInstruction(fnIndex, block, address) {
+  function jumpToInstruction(fnIndex, block, address, showSource = false) {
     if (fnIndex !== current) showFunction(fnIndex);
-    if (block !== selected) selectBlock(FUNCS[current], block, true);
-    highlightInstruction(address, false);
+    if (block !== selected) selectBlock(FUNCS[current], block, false);
+    const row = selectedAssemblyGroups.map((group) => group.querySelector(`[data-address="${address}"]`)).find(Boolean);
+    highlightInstruction(row, showSource);
+    row?.focus({ preventScroll: true });
+  }
+
+  function renderAssembly() {
+    instructionIndex ??= indexInstructions();
+    const asm = $("#asm");
+    const rows = DATA.assembly ?? FUNCS.flatMap((fn) => [
+      `${hex(fn.address)} <${fn.display}>:`,
+      ...fn.blocks.flatMap((block) => block.insts.filter((inst) => !inst.data && !isCFI(inst))
+        .map((inst) => [inst.addr, inst.text])),
+    ]);
+    const html = ['<table aria-label="Executable disassembly">'];
+    const groups = [];
+    let currentBlock;
+    let groupOpen = false;
+    for (const row of rows) {
+      if (typeof row === "string") {
+        if (groupOpen) html.push("</tbody>");
+        html.push(`<tbody><tr class="asm-symbol"><th colspan="2" scope="rowgroup">${esc(row)}</th></tr></tbody>`);
+        groupOpen = false;
+        continue;
+      }
+      const [address, text] = row;
+      const destination = instructionIndex.addresses.get(address);
+      const block = destination?.block;
+      if (!groupOpen || currentBlock !== block) {
+        if (groupOpen) html.push("</tbody>");
+        currentBlock = block;
+        groupOpen = true;
+        if (destination) {
+          const label = esc(block.name);
+          html.push(`<tbody data-asm-group="${groups.length}" data-asm-block="${label}" data-fn="${destination.fnIndex}">` +
+            `<tr class="asm-block-label"><th colspan="2" scope="rowgroup">` +
+            `<button type="button" class="asm-block-link">${label}</button></th></tr>`);
+          groups.push(block);
+        } else {
+          html.push("<tbody>");
+        }
+      }
+      const source = destination?.source;
+      const location = source ? `${source.file}:${source.line}${source.column ? ":" + source.column : ""}` : "";
+      const sourceAttrs = source ? ` data-source="${address}" title="${esc(location)}"` : "";
+      const label = destination ? `<button type="button" class="asm-link"${sourceAttrs}>${hex(address)}</button>` : hex(address);
+      const attrs = destination ? ` class="asm-instruction" data-address="${address}" tabindex="-1"` : "";
+      const inst = destination?.instruction ?? { addr: address, text };
+      html.push(`<tr${attrs}><td class="addr">${label}</td><td class="insn">${renderInstruction(inst, destination)}</td></tr>`);
+    }
+    if (groupOpen) html.push("</tbody>");
+    html.push("</table>");
+    asm.innerHTML = html.join("");
+    assemblyBlocks = new Map();
+    for (const group of asm.querySelectorAll("[data-asm-group]")) {
+      const block = groups[Number(group.dataset.asmGroup)];
+      if (!assemblyBlocks.has(block)) assemblyBlocks.set(block, []);
+      assemblyBlocks.get(block).push(group);
+    }
+    const notice = $("#asm-unavailable");
+    notice.hidden = Boolean(DATA.assembly);
   }
 
   function selectBlock(fn, name, scroll) {
@@ -612,33 +694,22 @@
     });
     const head = $("#detail-head");
     const edges = $("#detail-edges");
-    const asm = $("#asm");
-    const share = B.count && fn.blocks.length ? ((B.count / Math.max(1, fn.hot || 0)) * 100).toFixed(1) : null;
     head.innerHTML =
       `<div class="bname">${esc(B.name)}</div>` +
       `<div class="sub">0x${B.addr.toString(16)} &nbsp;·&nbsp; +0x${B.offset.toString(16)} &nbsp;·&nbsp; ` +
-      `<span class="hot">${fmt(B.count)}</span> ${B.count === 1 ? "execution" : "executions"}${share ? " (" + share + "% of hottest BB)" : ""}</div>`;
+      `<span class="hot">${fmt(B.count)}</span> ${B.count === 1 ? "execution" : "executions"}</div>`;
     const chip = (n, c) => `<button type="button" class="chip" data-jump="${esc(n)}">${esc(n)}${c == null ? "" : " · " + fmt(c)}</button>`;
     const group = (label, items) => items.length ? `<div class="edge-group"><b>${label}</b>${items.join("")}</div>` : "";
     edges.innerHTML = group("Predecessors", B.preds.map((p) => chip(p, null))) +
       group("Successors", B.succs.map((s) => chip(s.target, s.count ?? s.inferred)));
 
-    instructionIndex ??= indexInstructions();
-    const sources = instructionIndex.functionSources[current];
-    asm.innerHTML = `<table>${B.insts.map((inst) => {
-      const cfi = isCFI(inst);
-      const address = hex(inst.addr);
-      const source = cfi || inst.data ? null : sources.instructions.get(inst.addr);
-      const location = source ? `${source.file}:${source.line}${source.column ? ":" + source.column : ""}` : "";
-      const label = source ? `<button type="button" class="asm-link" data-source="${inst.addr}" title="${esc(location)}">${address}</button>` : address;
-      return `<tr${cfi ? ' class="cfi"' : ` data-address="${inst.addr}" tabindex="-1"`}><td class="addr">${label}</td>` +
-        `<td class="insn">${renderInstruction(inst, B)}</td></tr>`;
-    }).join("")}</table>`;
-    if (scroll) {
-      asm.scrollTop = 0;
-      asm.scrollLeft = 0;
-    }
-    selectBlockSource(B, sources);
+    assemblyRow?.classList.remove("address-selected");
+    assemblyRow = null;
+    for (const group of selectedAssemblyGroups) group.classList.remove("block-selected");
+    selectedAssemblyGroups = assemblyBlocks.get(B) ?? [];
+    for (const group of selectedAssemblyGroups) group.classList.add("block-selected");
+    if (scroll) scrollAssemblyTo(selectedAssemblyGroups[0]?.firstElementChild);
+    selectBlockSource(B, instructionIndex.functionSources[current]);
   }
 
   // ----------------------------------------------------------- callgraph
@@ -660,7 +731,7 @@
     const showExt = $("#cg-external").checked;
     const defs = CG.nodes
       .filter((n) => !n.external)
-      .sort((a, b) => (b.hot || 0) - (a.hot || 0));
+      .sort((a, b) => b.flow - a.flow);
     const keep = new Set(defs.slice(0, CG_LIMIT).map((n) => n.id));
     const nodes = defs.filter((n) => keep.has(n.id)).slice();
     const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -684,10 +755,9 @@
 
   function cgRunLayout(nodes, edges) {
     const n = nodes.length;
-    const maxHot = Math.max(1, ...nodes.map((d) => d.hot || 0));
-    const hotLog = Math.log1p(maxHot);
+    const flowLog = Math.log1p(Math.max(1, ...nodes.map((d) => d.flow ?? 0)));
     nodes.forEach((d) => {
-      d.r = d.external ? 8 : 8 + 14 * Math.sqrt(Math.log1p(d.hot || 0) / hotLog);
+      d.r = d.external ? 8 : 8 + 14 * Math.sqrt(Math.log1p(d.flow) / flowLog);
     });
     if (!n) return;
 
@@ -870,13 +940,12 @@
       labelIds = new Set(
         nodes
           .slice()
-          .sort((a, b) => (b.hot || 0) - (a.hot || 0))
+          .sort((a, b) => b.flow - a.flow)
           .slice(0, 70)
           .map((n) => n.id)
       );
     }
-    const maxHot = Math.max(1, ...nodes.map((n) => n.hot || 0));
-    const hotLog = Math.log1p(maxHot);
+    const flowLog = Math.log1p(Math.max(1, ...nodes.map((n) => n.flow ?? 0)));
 
     nodes.forEach((d) => {
       const grp = document.createElementNS(SVGNS, "g");
@@ -890,7 +959,7 @@
       circle.setAttribute("r", d.r.toFixed(1));
       circle.setAttribute(
         "fill",
-        d.external ? "#eef1f6" : heat(d.hot ? Math.log1p(d.hot) / hotLog : 0)
+        d.external ? "#eef1f6" : heat(Math.log1p(d.flow) / flowLog)
       );
       grp.appendChild(circle);
 
@@ -905,7 +974,7 @@
       const title = document.createElementNS(SVGNS, "title");
       title.textContent = d.external
         ? `${d.display}\nexternal symbol \u00b7 ${d.sites} call sites`
-        : `${d.display}\n hottest BB ${fmt(d.hot)} \u00b7 ${d.bb_count} BBs \u00b7 entries ${fmt(d.exec_count)}`;
+        : `${d.display}\n${d.bb_count} BBs · ${fmt(d.exec_count)} entries`;
       grp.appendChild(title);
 
       grp.addEventListener("click", (ev) => {
@@ -991,7 +1060,7 @@
     } else {
       info.innerHTML =
         `<div class="bname">${esc(d.display)}</div>` +
-        `<div class="sub">${fmt(d.exec_count)} entries · Hottest BB <span class="hot">${fmt(d.hot)}</span></div>`;
+        `<div class="sub">${fmt(d.exec_count)} entries</div>`;
     }
 
     links.innerHTML = (d.fn >= 0 ? '<button type="button" class="open-cfg" id="cg-open">Open CFG</button>' : "") +
@@ -1058,9 +1127,7 @@
       ["Size", fmt(fn.size) + " B"],
       ["Basic blocks", fmt(fn.bb_count)],
       ["Entries", fmt(fn.exec_count)],
-      ["Hottest BB", fmt(fn.hot)],
       ["Block exec sum", fmt(fn.flow)],
-      ["Profile match", fn.profile_acc == null ? "—" : fn.profile_acc.toFixed(1) + "%"],
     ];
     $("#func-stats").innerHTML = stats.map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`).join("");
     $("#func-warning").hidden = !fn.unknown_cf;
@@ -1095,10 +1162,12 @@
       $("#detail-head").hidden = selected === null;
       $("#asm").hidden = selected === null;
       $("#detail-edges").hidden = selected === null;
+      if (!assemblyBlocks) renderAssembly();
       renderCfg(fn);
       if (selected !== null) selectBlock(fn, selected, true);
     }
 
+    paintCfg();
     $("#back-label").textContent = timelineOpen || parentView === "overview" ? "Overview" : "Call graph";
     updateSourcePanel();
     if (entering) $("#func-name").focus({ preventScroll: true });
@@ -1142,10 +1211,12 @@
     const onCompact = compact.matches;
     const leftOpen = onCompact ? compactPanels[activeView] === "functions" : functionsOpen[activeView];
     const rightOpen = onCompact ? compactPanels[activeView] === "inspector" : inspectorOpen[activeView];
+    const openingAssembly = activeView === "function" && rightOpen && panels.inspector.body.hidden;
     setPanel(panels.functions, leftOpen, $("#function-panel-title").textContent);
     setPanel(panels.inspector, rightOpen, $("#inspector-title").textContent);
     rightPanels.classList.toggle("collapsed", !rightOpen);
     updateSourcePanel();
+    if (openingAssembly) scrollAssemblyTo(assemblyRow ?? selectedAssemblyGroups[0]?.firstElementChild);
     updateGraphViewport();
   }
 
@@ -1356,14 +1427,21 @@
   });
 
   $("#asm").addEventListener("click", (e) => {
-    const link = e.target.closest(".asm-link");
-    if (!link) return;
-    if (link.dataset.source !== undefined) {
-      highlightInstruction(link.dataset.source, true);
+    const link = e.target.closest("button[data-target]");
+    if (link) {
+      const { fn, block, target } = link.dataset;
+      jumpToInstruction(Number(fn), block, target, true);
       return;
     }
-    const { fn, block, target } = link.dataset;
-    jumpToInstruction(Number(fn), block, target);
+    const group = e.target.closest("[data-asm-block]");
+    if (!group) return;
+    const block = group.dataset.asmBlock;
+    const fnIndex = Number(group.dataset.fn);
+    if (fnIndex !== current) showFunction(fnIndex);
+    if (block !== selected || e.target.closest(".asm-block-label")) {
+      selectBlock(FUNCS[current], block, false);
+    }
+    highlightInstruction(e.target.closest(".asm-instruction"), true);
   });
 
   $("#source-file").addEventListener("change", (e) => {

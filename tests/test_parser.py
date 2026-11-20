@@ -1,4 +1,4 @@
-from visasm.model import Function, hotness_max, parse_print_cfg
+from visasm.model import parse_print_cfg
 from visasm.report import build_payload, strip_alias
 
 SAMPLE = """BOLT-INFO: Target architecture: aarch64
@@ -50,7 +50,6 @@ def test_parse_function_header_and_blocks():
     assert fn.address == 0x1000
     assert fn.size == 0x24
     assert fn.exec_count == 10
-    assert fn.profile_acc == 100.0
     assert fn.bb_count == 3
     assert fn.layout == [".LBB00", ".LBB01", ".LBB02"]
     assert len(fn.blocks) == 3
@@ -87,7 +86,7 @@ def test_offsets_and_json():
     obj = payload["functions"][0]
     assert obj["blocks"][1]["addr"] == 0x1008
     assert obj["raw_name"] == "main"
-    assert payload["summary"]["hottest_block"] == 10
+    assert obj["flow"] == 14
 
 
 def test_alias_suffix_is_stripped():
@@ -121,14 +120,6 @@ ns::foo<int, char>/1 (1 instructions, align : 1)
     assert len(fn.blocks) == 2
     assert fn.blocks[0].succs[0].target == "ns::foo<int, char>/1"
     assert fn.blocks[1].preds == ["ns::foo<int, char>/0"]
-
-
-def test_hotness_max():
-    f1 = Function(name="a")
-    f2 = Function(name="b", exec_count=5)
-    payload = build_payload([f1, f2], "/tmp/x", None)
-    assert hotness_max([f1, f2]) == 5
-    assert payload["hot_max"] == 5
 
 
 CALL_SAMPLE = """Binary Function "caller" after building cfg {

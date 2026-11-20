@@ -40,7 +40,7 @@ button { color: inherit; cursor: pointer; }
   flex: 0 0 auto;
 }
 
-.brand { font-size: 18px; font-weight: 750; letter-spacing: -0.025em; }
+.brand { font-size: 18px; font-weight: 750; letter-spacing: -0.025em; white-space: nowrap; }
 .report-name {
   min-width: 0;
   padding-left: 16px;
@@ -76,7 +76,7 @@ main { flex: 1; display: flex; min-height: 0; min-width: 0; }
 }
 .summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 20px;
 }
@@ -133,16 +133,12 @@ main { flex: 1; display: flex; min-height: 0; min-width: 0; }
 .funcs tr[data-function]:hover, .funcs tr[data-function]:focus-within { background: #f1f5fd; }
 .fname { width: 45%; }
 .fname button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
   padding: 9px 0;
   border: none;
   background: transparent;
   text-align: left;
   font: 12px var(--mono);
 }
-.heatcell { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
 .funcs .empty { padding: 20px 16px; }
 
 .workspace, .panel-body, .detail {
@@ -364,12 +360,33 @@ main { flex: 1; display: flex; min-height: 0; min-width: 0; }
 
 .asm { overflow: auto; flex: 1; padding: 4px 0; }
 .asm table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12px; }
+.asm-symbol th {
+  padding: 7px 8px;
+  border-top: 1px solid var(--line);
+  color: var(--text);
+  text-align: left;
+  white-space: pre;
+}
+.asm-block-label th { padding: 0; border-top: 1px solid var(--line); text-align: left; }
+.asm-block-link {
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: #f7f9fc;
+  color: var(--muted);
+  text-align: left;
+  font: inherit;
+  font-weight: 600;
+}
+.asm .block-selected .asm-block-link { background: #e7effd; color: #244d99; }
+.asm .block-selected .asm-instruction { background: #f1f6ff; }
 .asm td { padding: 2px 8px; white-space: pre; vertical-align: top; }
 .asm td.addr { color: var(--muted); width: 92px; }
 .asm td.insn { color: #16202e; }
 .asm tr.cfi td { color: #667487; font-style: italic; }
-.asm tr:hover { background: #f5f8fc; }
-.asm tr.address-selected { background: #e7effd; }
+.asm .asm-instruction { cursor: pointer; }
+.asm tbody .asm-instruction:hover, .asm-block-link:hover { background: #eaf1fc; }
+.asm tbody .asm-instruction.address-selected { background: #dceaff; }
 .asm td.addr .asm-link { color: #3b659a; }
 .asm-link {
   border: 0;
@@ -443,7 +460,7 @@ button.source-line:hover, .source-line.selected { background: #dceaff; }
   .report-name { padding-left: 10px; }
   .report-nav { gap: 6px; }
   .report-nav button { padding-inline: 4px; }
-  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .summary { gap: 8px; margin-bottom: 12px; }
   .stat { padding: 10px 12px; }
   .overview-head .filter { width: min(100%, 200px); }
   .cg-toolbar, .func-head { padding: 8px 12px; gap: 6px 10px; }

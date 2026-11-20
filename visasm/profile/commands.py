@@ -77,7 +77,7 @@ def cmd_report(args) -> int:
         print(f"json                : {args.json}")
     write_report(payload, out, llvm_bin=args.llvm_bin)
     s = payload["summary"]
-    print(f"functions           : {s['functions']} ({s['matched_functions']} matched)")
+    print(f"functions           : {s['functions']}")
     print(f"basic blocks        : {s['blocks']}")
     print(f"report              : {out}")
     return 0
