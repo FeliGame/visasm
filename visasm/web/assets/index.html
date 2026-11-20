@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VISASM Workspace</title>
+  <link rel="stylesheet" href="xterm.css">
+  <link rel="stylesheet" href="workspace.css">
+  <script defer src="xterm.js"></script>
+  <script defer src="workspace.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wordmark"><strong>VISASM</strong><span>Workspace</span></div>
+  </header>
+
+  <div class="workspace">
+    <aside id="files" aria-labelledby="files-label">
+      <header class="side-head">
+        <h2 id="files-label">Files</h2>
+        <button class="quiet icon file-controls" id="refresh-files" type="button" title="Refresh files" aria-label="Refresh files">↻</button>
+      </header>
+      <div id="file-browser">
+        <p class="root-path" id="root-path"></p>
+        <div class="directory">
+          <button class="quiet icon" id="parent-dir" type="button" aria-label="Parent directory" title="Parent directory">↑</button>
+          <span id="current-dir"></span>
+        </div>
+        <ul class="file-list" id="file-list"></ul>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="setup" id="setup" aria-label="Analysis controls">
+        <header class="section-head">
+          <button class="quiet" id="toggle-files" type="button" aria-controls="files" aria-expanded="true">
+            <span class="chevron" aria-hidden="true"></span> Files
+          </button>
+          <span id="job-status" role="status"></span>
+          <div class="run-actions" data-analysis="profile">
+            <button class="quiet" type="button" data-stop="profile" hidden>Stop Profile</button>
+            <button class="primary" type="submit" form="analysis" value="profile" disabled>Run Profile</button>
+          </div>
+          <div class="run-actions" data-analysis="trace">
+            <button class="quiet" type="button" data-stop="trace" hidden>Stop Trace</button>
+            <button class="primary" type="submit" form="analysis" value="trace" disabled>Run Trace</button>
+          </div>
+        </header>
+        <form id="analysis">
+          <div class="inputs">
+            <span class="input-label">Inputs</span>
+            <div id="selected-files" class="selected-files"></div>
+            <span id="input-empty" class="muted">Add a source file or ELF from Files</span>
+          </div>
+          <div class="fields">
+            <label class="compiler-field">Compiler
+              <input id="compiler" name="compiler" placeholder="clang" spellcheck="false">
+            </label>
+            <label class="flags-field">Compile flags
+              <input id="flags" name="flags" value="-O2 -g -Wl,-q" spellcheck="false">
+            </label>
+            <label>Program arguments
+              <input name="arguments" spellcheck="false">
+            </label>
+          </div>
+          <details class="options">
+            <summary>Options</summary>
+            <div class="fields">
+              <label>Working directory<input id="working-directory" name="cwd" placeholder="Input folder" spellcheck="false"></label>
+              <label>Function filter<input name="function" spellcheck="false"></label>
+              <label>LLVM binaries<input name="llvm-bin" placeholder="PATH or VISASM_BOLT_BIN" spellcheck="false"></label>
+              <label>QEMU executable<input name="qemu" placeholder="Auto-detect from ELF" spellcheck="false"></label>
+              <label>QEMU header directory<input name="qemu-include" placeholder="Directory with qemu-plugin.h" spellcheck="false"></label>
+              <label class="check-option"><input name="no-source" type="checkbox"> Skip DWARF source mapping</label>
+            </div>
+          </details>
+        </form>
+      </section>
+
+      <section class="viewer" id="viewer" aria-label="Source and analysis report">
+        <div class="viewer-bar">
+          <div class="viewer-tabs" role="group" aria-label="Viewer">
+            <button data-view="source" type="button" aria-pressed="false">Source</button>
+            <button data-view="profile" type="button" aria-pressed="true">Profile</button>
+            <button data-view="trace" type="button" aria-pressed="false">Trace</button>
+          </div>
+          <span id="viewer-name"></span>
+          <time id="report-updated" hidden></time>
+          <a class="quiet" id="export-report" download hidden>Download HTML</a>
+          <button class="quiet" id="expand-report" type="button" aria-pressed="false" hidden>Expand</button>
+        </div>
+        <div class="empty-view" id="empty-view">
+          <h2 id="empty-title">No Profile report</h2>
+        </div>
+        <div class="source-view" id="source-view" hidden></div>
+        <iframe id="profile-frame" title="VISASM Profile report" sandbox="allow-scripts" hidden></iframe>
+        <iframe id="trace-frame" title="VISASM Trace report" sandbox="allow-scripts" hidden></iframe>
+      </section>
+
+    </main>
+  </div>
+  <section class="console" id="console" aria-label="Terminal and analysis output">
+    <div class="console-bar">
+      <div class="console-tabs" role="group" aria-label="Console view">
+        <button id="show-terminal" type="button" aria-pressed="true">Terminal</button>
+        <button id="show-output" type="button" aria-pressed="false">Run output</button>
+      </div>
+      <button class="quiet icon" id="toggle-console" type="button" aria-controls="console-body" aria-expanded="false" aria-label="Expand bottom panel">
+        <span class="chevron" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div id="console-body" hidden>
+      <div id="shell"></div>
+      <pre id="run-output" tabindex="0" hidden></pre>
+    </div>
+  </section>
+</body>
+</html>

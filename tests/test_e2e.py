@@ -5,12 +5,14 @@ import os
 import platform
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from visasm.bolt import find_tool
 from visasm.cli import main
+from visasm.web.workspace import Workspace
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO_C = ROOT / "tests" / "fixtures" / "demo.c"
@@ -124,6 +126,36 @@ def test_profile_pipeline(demo, monkeypatch):
 def test_report_requires_binary(tmp_path):
     with pytest.raises(SystemExit):
         main(["report", str(tmp_path / "missing")])
+
+
+def test_workspace_compiles_source_and_runs_profile(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "example.c"
+    include = project / "include"
+    include.mkdir()
+    header = include / "example.h"
+    header.write_text("#define START_VALUE 0\n")
+    source.write_text('#include "example.h"\n' + DEMO_C.read_text().replace("long sum = 0", "long sum = START_VALUE"))
+    workspace = Workspace(project, tmp_path)
+    assert workspace.browse("include")["entries"][0]["kind"] == "header"
+    assert workspace.preview(source.name)["kind"] == "source"
+
+    job = workspace.start({
+        "mode": "profile",
+        "inputs": ["include/example.h", source.name],
+        "compiler": _clang(),
+        "arguments": "20",
+    })
+    try:
+        job.worker.join(timeout=15)
+        result = job.poll(0)
+        assert result["state"] == "complete", result["output"]
+        assert datetime.fromisoformat(result["updated_at"]).tzinfo == timezone.utc
+        assert "VISASM Profile" in job.report.read_text()
+        assert set(project.iterdir()) == {include, source}
+    finally:
+        workspace.close()
 
 
 def test_assembly_includes_sections_outside_cfg_filter(demo):

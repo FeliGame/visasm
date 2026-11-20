@@ -9,6 +9,7 @@ from . import __version__
 from .bolt import BoltError
 from .profile.commands import cmd_instrument, cmd_profile, cmd_report, cmd_run
 from .trace.commands import cmd_trace
+from .web.server import cmd_serve
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
     def common(sp):
         sp.add_argument("--llvm-bin", help="directory containing llvm-bolt/merge-fdata")
         sp.add_argument("-v", "--verbose", action="store_true")
+
+    web = sub.add_parser("serve", help="Open the local browser workspace for Profile and Trace")
+    web.add_argument("root", nargs="?", default=".", help="directory shown in the file browser")
+    web.add_argument("--port", type=int, default=8765, help="loopback port (default: 8765, use 0 for automatic)")
+    web.set_defaults(func=cmd_serve)
 
     pa = sub.add_parser(
         "profile",

@@ -4,6 +4,7 @@ visasm 用 LLVM 22 BOLT 从 ELF 机器码提取基本块（BB）和控制流图�
 
 | 命令 | 用途 | 额外依赖 |
 | --- | --- | --- |
+| `visasm serve` | 可交互的Web前端，涵盖了本项目所有功能 | 见下 |
 | `visasm profile` | 用 BOLT 统计执行次数，查看热点 CFG 和调用图 | BOLT |
 | `visasm trace` | 用 QEMU 记录 BB 入口时间戳，拖动或播放执行时序 | [QEMU](docs/qemu-setup.md) |
 
@@ -19,6 +20,14 @@ python3 -m venv .venv
 python -m pip install -e .
 clang -O2 -g -Wl,-q -o demo tests/fixtures/demo.c
 ```
+
+## Web前端
+
+```bash
+visasm serve .
+```
+
+在浏览器打开终端打印的完整地址。服务器监听 `127.0.0.1`，默认端口为 `8765`。可传入项目目录作为文件浏览根目录，或使用 `--port 0` 自动分配端口。
 
 ## BB 热点分析
 

@@ -18,6 +18,7 @@ include = ["visasm*"]
 [tool.setuptools.package-data]
 visasm = ["assets/*"]
 "visasm.trace" = ["qemu_plugin.c", "assets/*"]
+"visasm.web" = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

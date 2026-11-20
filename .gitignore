@@ -19,5 +19,6 @@ dist/
 *.fdata
 *.html
 !visasm/trace/assets/*.html
+!visasm/web/assets/*.html
 *.json
 .trae-html-share-packages/
