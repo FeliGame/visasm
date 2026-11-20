@@ -7,6 +7,7 @@
   const FUNCS = DATA.functions;
   const functionIndices = new Map(FUNCS.map((fn, index) => [fn, index]));
   const HOT_LOG = Math.log1p(DATA.hot_max || 1);
+  const timeline = DATA.timeline;
 
   let query = "";
   let sortKey = "hot";
@@ -17,6 +18,7 @@
   let activeView = "overview";
   let parentView = "overview";
   let parentFunction = -1;
+  let timelineOpen = false;
   const functionsOpen = { callgraph: true, function: true };
   const inspectorOpen = { callgraph: true, function: true };
   const compactPanels = { callgraph: null, function: null };
@@ -83,6 +85,7 @@
     ]
       .map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`)
       .join("");
+    if (timeline) renderTraceMeta();
   }
 
   function renderList() {
@@ -359,7 +362,7 @@
       meta.setAttribute("class", "meta");
       meta.setAttribute("x", a.x + 12);
       meta.setAttribute("y", a.y + 39);
-      meta.textContent = `+0x${B.offset.toString(16)}  ·  ${B.insts.length} insns`;
+      meta.textContent = `+0x${B.offset.toString(16)}  ·  ${B.insts.length} insts`;
       node.appendChild(meta);
 
       const cnt = document.createElementNS(SVGNS, "text");
@@ -1017,14 +1020,16 @@
     activeView = next;
     const inOverview = next === "overview";
     const inFunction = next === "function";
-    const section = inFunction ? parentView : next;
-    for (const name of ["overview", "callgraph"]) {
+    const section = timelineOpen ? "timeline" : inFunction ? parentView : next;
+    for (const name of ["overview", "callgraph", "timeline"]) {
       const button = $("#tab-" + name);
+      if (!button) continue;
       if (section === name) button.setAttribute("aria-current", inFunction ? "true" : "page");
       else button.removeAttribute("aria-current");
     }
 
-    $("#view-overview").hidden = !inOverview;
+    if (timeline) $("#timeline").hidden = !timelineOpen;
+    $("#view-overview").hidden = !inOverview || timelineOpen;
     $("#graph-workspace").hidden = inOverview;
     $("#cg-toolbar").hidden = $("#view-callgraph").hidden = $("#cg-detail").hidden = inFunction;
     $("#func-head").hidden = $("#view-function").hidden = $("#cfg-detail").hidden = !inFunction;
@@ -1037,7 +1042,9 @@
   }
 
   function showSection(next) {
-    if (activeView === next) return;
+    if (activeView === next && !timelineOpen) return;
+    timelineOpen = false;
+    if (timeline) stopPlayback();
     setView(next);
     if (next === "callgraph") {
       if (!cgGeom) renderCallGraph();
@@ -1092,10 +1099,12 @@
       if (selected !== null) selectBlock(fn, selected, true);
     }
 
-    $("#back-label").textContent = parentView === "overview" ? "Overview" : "Call graph";
+    $("#back-label").textContent = timelineOpen || parentView === "overview" ? "Overview" : "Call graph";
     updateSourcePanel();
     if (entering) $("#func-name").focus({ preventScroll: true });
   }
+
+/*__VISASM_TRACE_JS__*/
 
   // -------------------------------------------------------------- panels
   const stage = $("#stage");
@@ -1267,6 +1276,11 @@
   $("#tab-overview").addEventListener("click", () => showSection("overview"));
   $("#tab-callgraph").addEventListener("click", () => showSection("callgraph"));
   $("#back-to-report").addEventListener("click", () => {
+    if (timelineOpen) {
+      showSection("overview");
+      $("#open-timeline").focus({ preventScroll: true });
+      return;
+    }
     showSection(parentView);
     const target = parentView === "overview"
       ? $(`tr[data-function="${parentFunction}"] button`)
@@ -1374,11 +1388,12 @@
   });
 
   window.addEventListener("keydown", (e) => {
-    if (activeView !== "function" || e.target.closest("input, .asm, .source-body")) return;
+    if (timelineOpen || activeView !== "function" || e.target.closest("input, .asm, .source-body")) return;
     if (e.key === "ArrowRight" && current + 1 < FUNCS.length) showFunction(current + 1);
     if (e.key === "ArrowLeft" && current > 0) showFunction(current - 1);
   });
 
   renderMeta();
   renderOverview();
+  if (timeline) configureTimeline();
 })();

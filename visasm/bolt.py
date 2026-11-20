@@ -35,8 +35,8 @@ def find_tool(name: str, llvm_bin: Optional[str] = None) -> str:
     candidates = []
     if llvm_bin:
         candidates.append(Path(llvm_bin) / name)
-    if os.environ.get("VISASM_LLVM_BIN"):
-        candidates.append(Path(os.environ["VISASM_LLVM_BIN"]) / name)
+    if os.environ.get("VISASM_BOLT_BIN"):
+        candidates.append(Path(os.environ["VISASM_BOLT_BIN"]) / name)
     found = shutil.which(name)
     if found:
         candidates.append(Path(found))
@@ -47,7 +47,7 @@ def find_tool(name: str, llvm_bin: Optional[str] = None) -> str:
         if cand.is_file() and os.access(cand, os.X_OK):
             return str(cand)
     raise BoltError(
-        f"cannot find {name}; pass --llvm-bin <dir> or set VISASM_LLVM_BIN"
+        f"cannot find {name}; pass --llvm-bin <dir> or set VISASM_BOLT_BIN"
     )
 
 

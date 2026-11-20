@@ -14,6 +14,7 @@ build/
 dist/
 
 # visasm / BOLT artifacts
+/visasm-output/
 *.inst
 *.fdata
 *.html

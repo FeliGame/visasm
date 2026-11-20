@@ -1,0 +1,40 @@
+#runtime {
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+#runtime h2 { margin: 0 0 10px; font-size: 16px; }
+#runtime .summary {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  margin-bottom: 8px;
+}
+#runtime .stat { background: var(--canvas); }
+#runtime .open-cfg { margin-top: 10px; }
+.timeline {
+  flex: 0 0 auto;
+  padding: 10px clamp(12px, 3vw, 34px);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.timeline-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.timeline-controls label { color: var(--muted); font-size: 12px; }
+.timeline-controls select, .timeline-step {
+  min-height: 29px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--canvas);
+  color: var(--text);
+  font: inherit;
+}
+.timeline-controls button:disabled { opacity: 0.45; cursor: default; }
+.timeline-position, .timeline-axis-labels { color: var(--muted); font: 11px var(--mono); }
+.timeline-position { margin-left: auto; }
+#timeline-axis { margin-top: 8px; }
+#timeline-density { display: block; width: 100%; height: 24px; border-radius: 4px; background: var(--canvas); }
+#timeline-time { display: block; width: 100%; margin: 0; accent-color: var(--accent); }
+.timeline-axis-labels { display: flex; justify-content: space-between; }
+.timeline-location { margin-top: 6px; overflow-wrap: anywhere; font: 600 12px var(--mono); }
+.timeline-note { margin: 4px 0 0; color: var(--muted); font-size: 12px; }

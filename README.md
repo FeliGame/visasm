@@ -1,42 +1,48 @@
 # visasm
 
-基于 LLVM 22 BOLT 的**机器码基本块（BB）级**运行时分析与可视化工具。
+visasm 用 LLVM 22 BOLT 从 ELF 机器码提取基本块（BB）和控制流图（CFG），生成包含汇编和 DWARF 源码映射的交互式 HTML 报告。
 
-visasm 不修改 LLVM 前端/中端，也不在 IR 上插桩。它复用 BOLT 的机器码级 instrumentation
-统计每个**汇编基本块**的执行次数，再借助 BOLT 自身的反汇编与 profile 匹配能力生成机器
-CFG，最后输出一个可交互的单文件 HTML 报告（热力 CFG + 汇编 + 源码行）。
+| 命令 | 用途 | 额外依赖 |
+| --- | --- | --- |
+| `visasm profile` | 用 BOLT 统计执行次数，查看热点 CFG 和调用图 | BOLT 插桩运行库 `libbolt_rt_instr.a` |
+| `visasm trace` | 用 QEMU 记录 BB 入口时间戳，拖动或播放执行时序 | [启用插件的 QEMU 和匹配的头文件](docs/qemu-setup.md) |
 
-## 工作原理
+## 公共环境
 
-```
-目标 ELF 二进制
-   │  llvm-bolt -instrument          # MC 层为每个 BB 插入计数器
-   ▼
-插桩后的二进制 ──运行──▶ prof.fdata   # BOLT runtime 退出时写出
-   │
-   │  llvm-bolt --data=prof.fdata --print-cfg --print-debug-info
-   ▼
-包含每 BB 执行次数/边计数/反汇编/DWARF 行号的 CFG 转储
-   │  visasm 解析 + 布局渲染
-   ▼
-report.html（自包含，可直接分享）
+需要 Python 3.9+、LLVM 22 的 `llvm-bolt` 和保留重定位信息的原始 ELF。若 BOLT 不在 PATH 中，可设置 `VISASM_BOLT_BIN`，或给命令传入 `--llvm-bin DIR`。
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+clang -O2 -g -Wl,-q -o demo tests/fixtures/demo.c
 ```
 
-关键点：计数与 CFG 都来自 BOLT 对最终机器码的处理，因此报告中每个节点就是一条汇编
-基本块，而不是中端 IR 基本块。
+## BB 热点分析
 
-## 环境要求
+```bash
+visasm profile ./demo -- 2000
+```
 
-- Python 3.9+
-- LLVM 22 的 `llvm-bolt`，且构建时启用 instrument runtime
-  （需要 `libbolt_rt_instr.a`，visasm 会自动在 llvm-bolt 同级的
-  `lib/` 或 `bolt_rt-bins/lib/` 下查找）
-- 目标程序为未 strip 的 ELF，并保留重定位信息（例如 `clang -O2 -g -Wl,-q`）
+打开 `visasm-output/profile/demo/report.html`。**Overview** 展示热点函数和 BB 执行次数，**Call graph** 展示 BOLT 解析的直接调用和尾调用。
 
-`llvm-bolt` 不在 PATH 时，可用 `--llvm-bin <目录>` 指定，或设置环境变量
-`VISASM_LLVM_BIN=<目录>`。
+- `--work-dir DIR` 指定插桩 ELF 和 fdata 的存放目录。默认在 `visasm-output/profile/<binary>/` 下为每次运行创建一个 `run-*` 子目录。
+- `--fdata-out FILE` 指定生成的 fdata 路径，默认文件名为 `profile.fdata`。
+- `--function FILTER` 通过 BOLT 的 `--print-only` 筛选报告中的函数。
+- `--bolt-opt OPT` 追加 BOLT 插桩参数，可重复。以 `-` 开头的值用 `--bolt-opt=OPT` 传入。
 
-如果本机的 LLVM 22 构建没有 BOLT，可单独构建（以 aarch64 为例）：
+profile 功能可以拆分为下述3步，并单独执行：BOLT 插桩、运行和报告生成，或复用已有 fdata。
+
+```bash
+visasm instrument ./demo
+visasm run visasm-output/profile/demo/demo.inst \
+  --expect-fdata visasm-output/profile/demo/profile.fdata -- 2000
+visasm report ./demo --fdata visasm-output/profile/demo/profile.fdata
+```
+
+`instrument` 支持 `--output`、`--fdata-out` 和 `--bolt-opt`。`report` 省略 `--fdata` 时生成静态 CFG 报告。
+
+如果已有 LLVM 22 构建，可单独构建带插桩运行库的 BOLT。以下示例使用 AArch64。
 
 ```bash
 cmake -S ~/llvm-project-22.1.8/bolt -B ~/bolt-build -G Ninja \
@@ -45,113 +51,42 @@ cmake -S ~/llvm-project-22.1.8/bolt -B ~/bolt-build -G Ninja \
   -DBOLT_TARGETS_TO_BUILD=AArch64 \
   -DBOLT_ENABLE_RUNTIME=ON
 ninja -C ~/bolt-build llvm-bolt
+export VISASM_BOLT_BIN="$HOME/bolt-build/bin"
 ```
 
-## 安装
+## BB 执行时序
+
+首次使用请按 [QEMU 用户态环境安装教程](docs/qemu-setup.md) 配置依赖和下面的两个路径。时序采集支持 64 位 Linux 上的 AArch64 和 x86-64 ELF。
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
-visasm --version
+visasm trace ./demo --qemu "$QEMU_BIN" --qemu-include "$QEMU_INCLUDE" \
+  --function 'main|classify' -- 2000
 ```
 
-也可以不安装，直接 `python3 -m visasm.cli ...`。
+打开 `visasm-output/trace/demo/report.html`。**Overview** 对比同一 QEMU 环境下插桩前后的整程墙钟耗时。目标程序会使用同一组参数执行两次。**Timeline** 按线程展示最近一次记录的 BB 入口，并联动高亮 CFG 和汇编。事件之间可能经过未追踪的代码、系统调用或线程调度。
 
-## 快速开始
+采集覆盖主进程及其线程中主 ELF 的 BB 入口，持续到程序退出。临时文件和报告随事件数增长。
+
+- `--qemu PATH` 指定启用插件的 QEMU 用户态程序。默认按目标 ELF 架构在 PATH 中查找。
+- `--qemu-include DIR` 指定包含同版本 `qemu-plugin.h` 的目录。
+- `--function REGEX` 仅采集 BOLT 函数名匹配的 BB。
+- `--fdata FILE` 将同一 ELF 的已有 BOLT 热点计数合入时序报告。
+
+## 通用报告选项
+
+两条命令均支持 `-o/--output FILE` 指定 HTML 路径，`--json FILE` 另存结构化数据，`--title TITLE` 设置标题，`--no-source` 跳过 DWARF 源码映射。目标程序的参数放在 `--` 后面。完整选项见 `visasm profile --help` 和 `visasm trace --help`。
+
+## 分步采集热点
+
+
+
+## 源码与测试
+
+`visasm/profile/` 放置热点分析命令，`visasm/trace/` 放置时序采集代码、QEMU 插件和时间轴界面。两者共用 BOLT CFG 解析和 HTML 报告基础组件。
 
 ```bash
-# 编译一个带重定位信息的程序
-clang -O2 -g -Wl,-q -o demo demo.c
-
-# 一条命令完成：插桩 -> 运行 -> 生成报告
-visasm profile ./demo -o report.html --json model.json -- 100000
+python -m pip install pytest
+python -m pytest -q
 ```
 
-打开 `report.html` 即可查看。
-
-## 命令参考
-
-### `visasm instrument`
-
-在机器码层插入每基本块计数器。
-
-```bash
-visasm instrument <binary> [-o OUT] [--profile FDATA] [--bolt-opt OPT]...
-```
-
-| 选项 | 说明 |
-| --- | --- |
-| `-o, --output` | 插桩后二进制，默认 `<binary>.inst` |
-| `--profile` | 运行后 profile 写出路径，默认 `<output>.fdata` |
-| `--bolt-opt` | 追加传给 llvm-bolt 的参数，可重复 |
-
-### `visasm run`
-
-运行插桩后的二进制并检查 profile 是否生成。
-
-```bash
-visasm run <instrumented> [--profile FDATA] -- <程序参数...>
-```
-
-### `visasm report`
-
-对已有 profile 生成报告（无需重新运行程序）。
-
-```bash
-visasm report <binary> --data FDATA [-o report.html] [--json model.json]
-                [--func 正则] [--no-source]
-```
-
-| 选项 | 说明 |
-| --- | --- |
-| `--data` | 插桩运行产生的 fdata；省略则所有计数为 unknown |
-| `-o, --output` | HTML 输出，默认 `<binary>.visasm.html`（当前目录） |
-| `--json` | 同时导出解析后的结构化模型 |
-| `--func` | 只输出匹配的符号（传给 BOLT `--print-only`） |
-| `--no-source` | 不读取 DWARF 行号，可显著加快大二进制处理 |
-
-### `visasm profile`
-
-`instrument + run + report` 的组合命令。
-
-```bash
-visasm profile <binary> [-o report.html] [--json model.json]
-                [--workdir DIR] [--profile FDATA] [--func 正则]
-                [--no-source] [--bolt-opt OPT]... -- <程序参数...>
-```
-
-所有子命令都支持 `--llvm-bin <目录>` 与 `-v/--verbose`。
-
-## 测试
-
-```bash
-.venv/bin/python -m pip install pytest
-.venv/bin/python -m pytest -q
-```
-
-端到端测试会用 `clang` 编译 `tests/fixtures/demo.c`，执行完整
-`instrument -> run -> report` 流程；缺少 LLVM/BOLT 时自动跳过。
-可用 `VISASM_CLANG` 指定编译器。
-
-## 目录结构
-
-```
-visasm/
-  cli.py          # 命令行入口与子命令
-  bolt.py         # llvm-bolt 调用封装
-  model.py        # --print-cfg 解析器与数据模型
-  report.py       # HTML 报告生成
-  assets/         # 报告模板、样式、交互脚本
-tests/
-  test_parser.py  # 解析器单元测试
-  test_e2e.py     # 完整流水线测试
-```
-
-## 已知限制
-
-- 仅面向 ELF 平台（当前在 Linux/aarch64 验证，BOLT 支持 x86-64）。
-- 每次运行会覆盖 profile 文件，暂不支持多次运行合并。
-- 调用图只包含 BOLT 能解析的直接调用/尾调用；间接调用（函数指针、虚调用）不产生边。
-- 报告将反汇编与模型内嵌在单个 HTML 中，二进制很大时文件会相应变大；
-  可用 `--func` 或 `--no-source` 控制体积与耗时。
+端到端测试使用 `clang` 编译示例，可通过 `VISASM_CLANG` 指定编译器。提供启用插件的 QEMU 和头文件后，测试会包含时序采集。

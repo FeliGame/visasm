@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 from pathlib import Path
@@ -53,27 +54,26 @@ def demo(tmp_path_factory):
     return binary, tmp
 
 
-def test_profile_pipeline(demo, capsys):
+def test_profile_pipeline(demo, monkeypatch):
     binary, tmp = demo
-    report = tmp / "report.html"
-    model = tmp / "model.json"
+    monkeypatch.chdir(tmp)
+    directory = tmp / "visasm-output" / "profile" / binary.name
+    report = directory / "report.html"
+    model = tmp / "profile.json"
 
     rc = main(
         [
             "profile",
             str(binary),
-            "-o",
-            str(report),
             "--json",
             str(model),
-            "--workdir",
-            str(tmp / "work"),
             "--",
             "2000",
         ]
     )
     assert rc == 0
     assert report.exists() and report.stat().st_size > 10_000
+    assert list(directory.glob("run-*/profile.fdata"))
 
     data = json.loads(model.read_text())
     assert data["summary"]["matched_functions"] >= 3
@@ -113,8 +113,56 @@ def test_profile_pipeline(demo, capsys):
     assert '"blocks"' in html  # embedded model
     assert '"callgraph"' in html
     assert "tab-callgraph" in html
+    assert "timeline-density" not in html
 
 
 def test_report_requires_binary(tmp_path):
     with pytest.raises(SystemExit):
         main(["report", str(tmp_path / "missing")])
+
+
+def test_trace_pipeline(demo, monkeypatch):
+    machine = platform.machine()
+    qemu = os.environ.get("QEMU_BIN") or shutil.which(f"qemu-{machine}")
+    include = os.environ.get("QEMU_INCLUDE")
+    if not qemu or not include or "-plugin" not in subprocess.check_output([qemu, "-help"], text=True):
+        pytest.skip("plugin-enabled QEMU and QEMU_INCLUDE are required")
+
+    binary, tmp = demo
+    monkeypatch.chdir(tmp)
+    report = tmp / "visasm-output" / "trace" / binary.name / "report.html"
+    model = tmp / "trace.json"
+    iterations = 40_000
+    assert main([
+        "trace", str(binary), "--json", str(model),
+        "--qemu", qemu, "--qemu-include", include,
+        "--function", "main|classify", "--", str(iterations),
+    ]) == 0
+
+    data = json.loads(model.read_text())
+    trace = data["timeline"]
+    assert trace["baseline_ns"] > 0
+    assert trace["duration_ns"] > 0
+    assert len(trace["events"]) > 100_000
+    timestamps = [time for time, _, _ in trace["events"]]
+    assert timestamps == sorted(timestamps)
+    assert 0 <= timestamps[0] <= timestamps[-1] <= trace["duration_ns"]
+    visits = {}
+    for _, probe, thread in trace["events"]:
+        assert thread == trace["main_thread"]
+        fn, block = trace["blocks"][probe]
+        function = data["functions"][fn]
+        assert function["blocks"][block]["insts"]
+        name = function["raw_name"].split("/")[0]
+        assert name in ("main", "classify")
+        visits[(fn, block)] = visits.get((fn, block), 0) + 1
+    assert len({fn for fn, _ in visits}) == 2
+    assert max(visits.values()) > 1
+    classify_entries = sum(
+        count for (fn, block), count in visits.items()
+        if data["functions"][fn]["raw_name"].split("/")[0] == "classify"
+        and data["functions"][fn]["blocks"][block]["entry"]
+    )
+    assert classify_entries == (iterations + 6) // 7
+    html = report.read_text()
+    assert "timeline-density" in html and "Recorded BB entries" not in html

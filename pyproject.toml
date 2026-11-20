@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "visasm"
 version = "0.1.0"
-description = "Basic-block level runtime profiling and visualization on top of LLVM BOLT"
+description = "Machine basic block hotspot profiles and execution timelines"
 requires-python = ">=3.9"
 dependencies = []
 
@@ -17,6 +17,7 @@ include = ["visasm*"]
 
 [tool.setuptools.package-data]
 visasm = ["assets/*"]
+"visasm.trace" = ["qemu_plugin.c", "assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

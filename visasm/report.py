@@ -14,6 +14,7 @@ from typing import Iterable, Optional
 from .model import Function, hotness_max
 
 _ASSETS = Path(__file__).parent / "assets"
+_TRACE_ASSETS = Path(__file__).parent / "trace" / "assets"
 _ALIAS_RE = re.compile(r"\(\*\d+\)$")
 _SOURCE_RE = re.compile(r"(.+?):([1-9]\d*)(?::\d+)?$")
 
@@ -249,8 +250,18 @@ def _source_mapping(payload: dict, llvm_bin: Optional[str]) -> dict:
 def render(payload: dict) -> str:
     data = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
     html = _read_asset("report.html")
-    html = html.replace("/*__VISASM_CSS__*/", _read_asset("report.css"))
-    html = html.replace("/*__VISASM_JS__*/", _read_asset("report.js"))
+    css = _read_asset("report.css")
+    script = _read_asset("report.js")
+    trace = payload.get("timeline") is not None
+
+    def trace_asset(name: str) -> str:
+        return (_TRACE_ASSETS / name).read_text(encoding="utf-8") if trace else ""
+
+    html = html.replace("<!--__VISASM_TRACE_NAV__-->", trace_asset("timeline-nav.html"))
+    html = html.replace("<!--__VISASM_TIMELINE__-->", trace_asset("timeline.html"))
+    html = html.replace("<!--__VISASM_TRACE_RUNTIME__-->", trace_asset("runtime.html"))
+    html = html.replace("/*__VISASM_CSS__*/", css + trace_asset("timeline.css"))
+    html = html.replace("/*__VISASM_JS__*/", script.replace("/*__VISASM_TRACE_JS__*/", trace_asset("timeline.js")))
     html = html.replace("/*__VISASM_DATA__*/", data)
     return html
 
